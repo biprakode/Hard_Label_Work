@@ -723,7 +723,9 @@ def main(argv):
     layerId = int(args.layerID)
 
     # Whitebox:
-    weights, biases = whitebox.getWeightsAndBiases(model, range(1, len(model.layers)))
+    # NOTE: earlier code used range(1, len(model.layers)) under the assumption of an explicit InputLayer at index 0.
+    # Our Sequential models have Dense at index 0 directly, so take every layer - getWeightsAndBiases skips ones without weights.
+    weights, biases = whitebox.getWeightsAndBiases(model, range(len(model.layers)))
 
     # ---------------------------------------------------
     # Check that we can attack the desired layer

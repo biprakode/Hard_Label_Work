@@ -17,13 +17,16 @@ DEBUG = True
 USE_GRADIENT = True
 
 LAYERS = 5
+TINIEST = True  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
 TINY = True
 TINIER = True  # Use tinier model with non-uniform hidden widths
 MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
 
 # LAYER_SIZES: full list [input_dim, hidden1, hidden2, ..., output_dim]
 # This is the single source of truth for all dimension-dependent code.
-if TINIER:
+if TINIEST:
+    LAYER_SIZES = [8, 8, 8, 8, 8, 8]
+elif TINIER:
     LAYER_SIZES = [32, 16, 16, 16, 8, 4]
 elif TINY:
     LAYER_SIZES = [64, 64, 64, 64, 64, 10]
@@ -46,15 +49,18 @@ TOTAL_HIDDEN_NEURONS = LAYER_BOUNDARIES[-1]
 SEED = 1 if len(sys.argv) < 3 else int(sys.argv[1])
 
 # Load test data based on dataset type
-if TINIER and MAKEBLOBS:
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/data/x_test_tinier_makeblobs.npy")
+if TINIEST and MAKEBLOBS:
+    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/data/x_test_tiniest_makeblobs.npy")
+    x_test = np.array(x_test, dtype=np.float64)
+elif TINIER and MAKEBLOBS:
+    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/data/x_test_tinier_makeblobs.npy")
     x_test = np.array(x_test, dtype=np.float64)
 elif MAKEBLOBS:
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/data/x_test_makeblobs.npy")
+    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/data/x_test_makeblobs.npy")
     x_test = np.array(x_test, dtype=np.float64)
 else:
     # Load CIFAR-10 data with preprocessing
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/data/x_test.npy")
+    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/data/x_test.npy")
     if TINY:
         x_test = x_test.mean(1)[:, ::4, ::4]
     x_test = x_test.reshape((-1, IDIM))
@@ -142,15 +148,17 @@ def load_converted_model(path, model, device):
     model.load_state_dict(new_state_dict)
     return model
 
-BASE_DIR = os.path.dirname(os.path.abspath("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/"))  # directory of utils.py
+BASE_DIR = os.path.dirname(os.path.abspath("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/"))  # directory of utils.py
 
 # Select model based on dataset type
-if TINIER and MAKEBLOBS:
-    MODEL_PATH = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/models/tinier_makeblobs_relu.pth"
+if TINIEST and MAKEBLOBS:
+    MODEL_PATH = "/enhanced_codebase/tiny_stuff/tiniest_makeblobs_relu.pth"
+elif TINIER and MAKEBLOBS:
+    MODEL_PATH = "/enhanced_codebase/tiny_stuff/tinier_makeblobs_relu.pth"
 elif MAKEBLOBS:
-    MODEL_PATH = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/models/makeblobs_relu.pth"
+    MODEL_PATH = "/enhanced_codebase/tiny_stuff/makeblobs_relu.pth"
 else:
-    MODEL_PATH = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/models/TinyModel_relu.pth"
+    MODEL_PATH = "/enhanced_codebase/tiny_stuff/TinyModel_relu.pth"
 
 cheat_net_cuda = CIFAR10Net().to(device).double()
 cheat_net_cuda = load_converted_model(MODEL_PATH, cheat_net_cuda, device)
@@ -240,7 +248,7 @@ def find_decision_boundary(zero=None, one=None, tensor=False):
     if zero is None and one is None:
         points = {}
         while len(points) < 2:
-            if not TINY and not TINIER:
+            if not TINY and not TINIER and not TINIEST:
                 maybe = random.sample(range(len(x_test)), 10)
                 maybe = x_test[maybe]
             else:

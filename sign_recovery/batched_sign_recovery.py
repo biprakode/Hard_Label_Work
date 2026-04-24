@@ -7,24 +7,29 @@ import sign_recovery
 
 # ========== Global Settings ========== #
 MAKEBLOBS                = True  # Use make_blobs synthetic dataset instead of CIFAR-10
-TINIER                   = True  # Use tinier model with non-uniform hidden widths
+TINIEST                  = True  # Use tiniest 8-8-8-8-8-8 model
+TINIER                   = False  # Use tinier model with non-uniform hidden widths
 
-if TINIER and MAKEBLOBS:
+if TINIEST and MAKEBLOBS:
+    model_name           = "tiniest_makeblobs_4hidden_float64"
+    model_path           = "/enhanced_codebase/tiny_stuff/tiniest_makeblobs_relu.keras"
+    LAYER_NEURON_COUNTS  = {1: 8, 2: 8, 3: 8, 4: 8}
+elif TINIER and MAKEBLOBS:
     model_name           = "tinier_makeblobs_4hidden_float64"
-    model_path           = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/models/tinier_makeblobs_relu.keras"
+    model_path           = "/enhanced_codebase/tiny_stuff/tinier_makeblobs_relu.keras"
     # Per-layer neuron counts for tinier model (32->16->16->16->8->4)
     LAYER_NEURON_COUNTS  = {1: 16, 2: 16, 3: 16, 4: 8}
 elif MAKEBLOBS:
     model_name           = "makeblobs_4x64_10_float64"
-    model_path           = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/models/makeblobs_relu.keras"
+    model_path           = "/enhanced_codebase/tiny_stuff/makeblobs_relu.keras"
     LAYER_NEURON_COUNTS  = {1: 64, 2: 64, 3: 64, 4: 64}
 else:
     model_name           = "cifar10_4x64_10_float64"
-    model_path           = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/models/TinyModel_relu.keras"
+    model_path           = "/enhanced_codebase/tiny_stuff/TinyModel_relu.keras"
     LAYER_NEURON_COUNTS  = {1: 64, 2: 64, 3: 64, 4: 64}
 
-duals_path               = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/sign_recovery/layer_neuron_npys"  # Path to precomputed dual points
-output_path              = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/results/sign_recovery"  # Output path for aggregated results
+duals_path               = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/sign_recovery/layer_neuron_npys"  # Path to precomputed dual points
+output_path              = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/results/sign_recovery"  # Output path for aggregated results
 LAYERIDS                 = (1, 2, 3, 4)  # layer IDs to analyze
 analyzeWiggleSensitivity = 'True'  # Record the sensitivity to the wiggle at the target layer
 analyzeSpeed             = 'True'  # Record the rate of change of future layer neurons
@@ -138,19 +143,26 @@ def main():
 
         NEURONIDS = range(num_neurons_in_layer)
 
-        # Parameter adjustments for each layer
+        # Parameter adjustments for each layer.
+        # IMPORTANT: `perfect_control_along_decision_boundary` caps dOFF at 3*dON
+        # (see sign_recovery.py:397-398). Under that cap dOFF >= dON always, so
+        # votes get pushed to +1 regardless of the true sign. For layers whose
+        # future-toggle signal is sparse (layer 1 and the last hidden layer)
+        # this produces 100%-confidence but structurally biased +1 outputs.
+        # Using `along_decision_boundary` for ALL layers removes the cap and
+        # lets dOFF/dON votes reflect the true sign asymmetry.
         if layerID == 1:
-            nExpMin = 100
+            nExpMin = 1000
             nExp = 10_000
-            choose_dx = 'perfect_control_along_decision_boundary'
+            choose_dx = 'along_decision_boundary'
         elif layerID in (2, 3):
             nExpMin = 1000
             nExp = 10_000
             choose_dx = 'along_decision_boundary'
         elif layerID == 4:
-            nExpMin = 1
-            nExp = 100
-            choose_dx = 'perfect_control_along_decision_boundary'
+            nExpMin = 500
+            nExp = 5_000
+            choose_dx = 'along_decision_boundary'
         else:
             print(f"Warning: Skipping layer {layerID} (not configured)")
             continue

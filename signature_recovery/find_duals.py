@@ -218,8 +218,11 @@ def main():
     np.random.seed(None)
     random.seed(None)
 
-    while len(all_points) < 10000:
-        print("Status", len(all_points), "/", 10000)
+    # For tiny networks, collect fewer points per run so the script finishes and saves.
+    # Bumped for tiniest to improve linear-region coverage (helps Layer-3 SVD rank).
+    TARGET = 3000 if TINIEST else (2000 if TINIER else 10000)
+    while len(all_points) < TARGET:
+        print("Status", len(all_points), "/", TARGET)
         remaining_crits = find_dual_points()
         remaining_crits = list(zip(remaining_crits, remaining_crits[1:]))
     
@@ -227,10 +230,10 @@ def main():
             all_points.append((left, dual, right))
 
 
-    if not os.path.exists("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/exp/%d"%SEED):
-        os.makedirs("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/exp/%d"%SEED)
+    if not os.path.exists("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/%d"%SEED):
+        os.makedirs("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/%d"%SEED)
     import pickle
-    pickle.dump(all_points, open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/exp/%d/duals_%08d.p"%(SEED,random.randint(0, 1000000)),"wb"))
+    pickle.dump(all_points, open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/%d/duals_%08d.p"%(SEED,random.randint(0, 1000000)),"wb"))
     
     print("Finished")
         

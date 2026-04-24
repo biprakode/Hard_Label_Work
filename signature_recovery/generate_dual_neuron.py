@@ -8,13 +8,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils import LAYER_SIZES, LAYER_BOUNDARIES
 
 cluster_files = [
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/exp/1-cluster-0.p",
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/exp/1-cluster-1.p",
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/exp/1-cluster-2.p",
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/exp/1-cluster-3.p",
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/signature_recovery/exp/1-cluster-4.p"
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-0.p",
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-1.p",
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-2.p",
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-3.p",
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-4.p"
 ]
-output_dir = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/sign_recovery/layer_neuron_npys"
+output_dir = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/sign_recovery/layer_neuron_npys"
 os.makedirs(output_dir, exist_ok=True)
 
 # Use LAYER_BOUNDARIES from utils (computed dynamically from LAYER_SIZES)
@@ -34,8 +34,11 @@ def process_cluster_file(cluster_path):
     for neuron_idx, dual_triplets in cluster_dict.items():
         if isinstance(dual_triplets, (list, tuple)):
             middle_duals = [triplet[1] for triplet in dual_triplets if len(triplet) == 3]
-            dual_array = np.array(middle_duals, dtype=np.float32)
-            dual_array = np.abs(dual_array) # abs weights
+            # Keep raw dual-point coordinates (float64). np.abs() here was wrong:
+            # dual points are positions in input space, not magnitudes — taking
+            # abs destroys the critical-hyperplane geometry and makes them
+            # useless for sign recovery.
+            dual_array = np.array(middle_duals, dtype=np.float64)
         else:
             raise ValueError(f"Unexpected structure for neuron {neuron_idx}")
 

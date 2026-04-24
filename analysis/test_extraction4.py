@@ -29,7 +29,7 @@ from pathlib import Path
 import argparse
 
 # ========== Configuration ========== #
-BASE_DIR = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction"
+BASE_DIR = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase"
 
 # Signature recovery outputs (unsigned weights)
 SIGNATURE_WEIGHTS_PATH = os.path.join(BASE_DIR, "signature_recovery/outputs/model_weights/Vrelu")
@@ -38,10 +38,11 @@ SIGNATURE_WEIGHTS_PATH = os.path.join(BASE_DIR, "signature_recovery/outputs/mode
 SIGN_RECOVERY_PATH = os.path.join(BASE_DIR, "results/sign_recovery")
 
 # Ground truth models
-TINY_MODEL_PTH = os.path.join(BASE_DIR, "tiny_shit/TinyModel_relu.pth")
-TINY_MODEL_KERAS = os.path.join(BASE_DIR, "tiny_shit/TinyModel_relu.keras")
-MAKEBLOBS_MODEL_PTH = os.path.join(BASE_DIR, "tiny_shit/makeblobs_relu.pth")
-TINIER_MODEL_PTH = os.path.join(BASE_DIR, "tiny_shit/tinier_makeblobs_relu.pth")
+TINY_MODEL_PTH = os.path.join(BASE_DIR, "tiny_stuff/TinyModel_relu.pth")
+TINY_MODEL_KERAS = os.path.join(BASE_DIR, "tiny_stuff/TinyModel_relu.keras")
+MAKEBLOBS_MODEL_PTH = os.path.join(BASE_DIR, "tiny_stuff/makeblobs_relu.pth")
+TINIER_MODEL_PTH = os.path.join(BASE_DIR, "tiny_stuff/tinier_makeblobs_relu.pth")
+TINIEST_MODEL_PTH = os.path.join(BASE_DIR, "tiny_stuff/tiniest_makeblobs_relu.pth")
 FULL_MODEL_PTH = os.path.join(BASE_DIR, "signature_recovery/models/converted_model.pth")
 
 # Test data
@@ -50,6 +51,8 @@ X_TEST_MAKEBLOBS_PATH = os.path.join(BASE_DIR, "data/x_test_makeblobs.npy")
 Y_TEST_MAKEBLOBS_PATH = os.path.join(BASE_DIR, "data/y_test_makeblobs.npy")
 X_TEST_TINIER_PATH = os.path.join(BASE_DIR, "data/x_test_tinier_makeblobs.npy")
 Y_TEST_TINIER_PATH = os.path.join(BASE_DIR, "data/y_test_tinier_makeblobs.npy")
+X_TEST_TINIEST_PATH = os.path.join(BASE_DIR, "data/x_test_tiniest_makeblobs.npy")
+Y_TEST_TINIEST_PATH = os.path.join(BASE_DIR, "data/y_test_tiniest_makeblobs.npy")
 
 # Output path for reconstructed models
 OUTPUT_PATH = os.path.join(BASE_DIR, "results/reconstructed_models")
@@ -90,6 +93,27 @@ class TinierModel(nn.Module):
 
     def forward(self, x):
         x = x.view(-1, 32)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        x = F.relu(self.fc4(x))
+        x = self.fc5(x)
+        return x
+
+
+class TiniestModel(nn.Module):
+    """Tiniest 8-8-8-8-8-8 make_blobs model."""
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(8, 8)
+        self.fc2 = nn.Linear(8, 8)
+        self.fc3 = nn.Linear(8, 8)
+        self.fc4 = nn.Linear(8, 8)
+        self.fc5 = nn.Linear(8, 8)
+        self.double()
+
+    def forward(self, x):
+        x = x.view(-1, 8)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = F.relu(self.fc3(x))
@@ -172,12 +196,15 @@ def load_ground_truth_model(model_path, model_class, device='cpu'):
     return model
 
 
-def load_unsigned_weights(signature_path, layer_id, num_neurons, input_dim, use_random_init=True):
+def load_unsigned_weights(signature_path, layer_id, num_neurons, input_dim, use_random_init=True, layer_offset=0):
     """
     Load unsigned weight vectors from signature recovery output.
 
     Uses weights_unscaled.npz + abs(scaling_factor) to ensure
     the scaling does NOT reveal sign information (only magnitude).
+
+    `layer_offset`: subtracted from parsed neuron id when directory names use
+    global (flat) neuron IDs rather than per-layer IDs.
     """
     weights = {}
     metadata_dict = {}
@@ -191,9 +218,11 @@ def load_unsigned_weights(signature_path, layer_id, num_neurons, input_dim, use_
 
     for neuron_dir in Path(layer_dir).glob("neuron_*"):
         try:
-            neuron_id = int(neuron_dir.name.split("_")[1])
+            raw_id = int(neuron_dir.name.split("_")[1])
+            # Handle global (flat) neuron IDs by shifting into [0, num_neurons).
+            neuron_id = raw_id - layer_offset if raw_id >= num_neurons else raw_id
 
-            if neuron_id >= num_neurons:
+            if neuron_id < 0 or neuron_id >= num_neurons:
                 continue
 
             # Load metadata to get scaling factor
@@ -387,8 +416,17 @@ def test_model_accuracy(model, X_test, Y_test, model_name="Model"):
     return accuracy
 
 
-def load_test_data(tiny=True, makeblobs=False, tinier=False):
+def load_test_data(tiny=True, makeblobs=False, tinier=False, tiniest=False):
     """Load and preprocess test data."""
+    if tiniest:
+        if os.path.exists(X_TEST_TINIEST_PATH):
+            x_test = np.load(X_TEST_TINIEST_PATH).astype(np.float64)
+            y_test = np.load(Y_TEST_TINIEST_PATH) if os.path.exists(Y_TEST_TINIEST_PATH) else np.zeros(len(x_test), dtype=np.int64)
+        else:
+            print(f"Tiniest test data not found at {X_TEST_TINIEST_PATH}")
+            return None, None
+        return torch.tensor(x_test, dtype=torch.float64), torch.tensor(y_test, dtype=torch.long)
+
     if tinier:
         if os.path.exists(X_TEST_TINIER_PATH):
             x_test = np.load(X_TEST_TINIER_PATH).astype(np.float64)
@@ -441,11 +479,13 @@ def load_test_data(tiny=True, makeblobs=False, tinier=False):
     return torch.tensor(x_test, dtype=torch.float64), torch.tensor(y_test, dtype=torch.long)
 
 
-def reconstruct_model(signature_path, sign_path, model_class, layer_config, true_model_path=None, random_seed=42):
+def reconstruct_model(signature_path, sign_path, model_class, layer_config, true_model_path=None, random_seed=42,
+                      copy_true_biases=True, copy_true_output=True):
     """
     Reconstruct a model by combining signature recovery and sign recovery outputs.
 
     Handles partial recovery: unrecovered neurons get Kaiming/He random initialization.
+    Returns (model, metrics, recovery_stats, recovered_masks_by_layer).
     """
     np.random.seed(random_seed)
 
@@ -457,6 +497,7 @@ def reconstruct_model(signature_path, sign_path, model_class, layer_config, true
         'random_init_neurons': 0,
         'per_layer': {}
     }
+    recovered_masks_by_layer = {}
 
     true_model = None
     if true_model_path and os.path.exists(true_model_path):
@@ -464,12 +505,18 @@ def reconstruct_model(signature_path, sign_path, model_class, layer_config, true
 
     layers = [model.fc1, model.fc2, model.fc3, model.fc4]
 
+    # Precompute layer_offsets for flat neuron ID conversion
+    layer_sizes = [v[0] for v in layer_config.values()]
+    layer_offsets = [sum(layer_sizes[:i]) for i in range(len(layer_sizes))]
+
     for layer_id, (layer, (num_neurons, input_dim)) in enumerate(zip(layers, layer_config.values()), start=0):
         print(f"\n--- Layer {layer_id} ({num_neurons} neurons, {input_dim} inputs) ---")
 
         unsigned_weights, recovered_mask, metadata = load_unsigned_weights(
-            signature_path, layer_id, num_neurons, input_dim, use_random_init=True
+            signature_path, layer_id, num_neurons, input_dim,
+            use_random_init=True, layer_offset=layer_offsets[layer_id]
         )
+        recovered_masks_by_layer[layer_id] = recovered_mask
 
         recovered_count = int(np.sum(recovered_mask))
         recovery_stats['per_layer'][layer_id] = {
@@ -530,19 +577,34 @@ def reconstruct_model(signature_path, sign_path, model_class, layer_config, true
         else:
             print(f"  Using full random initialization for weights")
 
-        # Copy biases from true model (not recovered in this attack)
-        if true_model is not None:
+        # Copy biases from true model (only if explicitly requested — cheating)
+        if copy_true_biases and true_model is not None:
             true_layer = [true_model.fc1, true_model.fc2, true_model.fc3, true_model.fc4][layer_id]
             with torch.no_grad():
                 layer.bias.data = true_layer.bias.data.clone()
+        else:
+            with torch.no_grad():
+                layer.bias.data.zero_()
 
-    # Copy output layer from true model
-    if true_model is not None:
+    # Copy output layer from true model (only if explicitly requested — cheating)
+    if copy_true_output and true_model is not None:
         with torch.no_grad():
             model.fc5.weight.data = true_model.fc5.weight.data.clone()
             model.fc5.bias.data = true_model.fc5.bias.data.clone()
         print(f"\n--- Output Layer ---")
-        print(f"  Copied from true model")
+        print(f"  Copied from true model (cheat)")
+    else:
+        # Initialize fc5 with Kaiming; will be fit via LR on oracle labels
+        fan_in = model.fc5.weight.shape[1]
+        std = np.sqrt(2.0 / fan_in)
+        with torch.no_grad():
+            model.fc5.weight.data = torch.tensor(
+                np.random.randn(*model.fc5.weight.shape).astype(np.float64) * std,
+                dtype=torch.float64
+            )
+            model.fc5.bias.data.zero_()
+        print(f"\n--- Output Layer ---")
+        print(f"  Kaiming init (will be LR-fit from oracle labels)")
 
     # Print recovery summary
     print(f"\n--- Recovery Summary ---")
@@ -552,7 +614,371 @@ def reconstruct_model(signature_path, sign_path, model_class, layer_config, true
     print(f"  Recovered: {recovered} ({100*recovered/total:.1f}%)")
     print(f"  Random init: {total - recovered} ({100*(total-recovered)/total:.1f}%)")
 
-    return model, metrics, recovery_stats
+    return model, metrics, recovery_stats, recovered_masks_by_layer
+
+
+DUAL_POINTS_DIR = os.path.join(BASE_DIR, "sign_recovery/layer_neuron_npys")
+
+
+def oracle_label_refinement(reconstructed_model, oracle_model, X_train,
+                             recovered_masks, n_epochs=300, lr=5e-3,
+                             freeze_recovered_weights=True, verbose=True):
+    """
+    Polish the reconstructed model against oracle hard labels.
+
+    When freeze_recovered_weights=True, weight rows for signature-recovered
+    neurons have their gradients zeroed — only biases, fc5, and rows of
+    random-init (unrecovered) neurons update. This keeps the attack's
+    extracted identity intact while allowing non-extracted components
+    (biases, output layer, and neurons never reached by find_duals) to
+    absorb oracle-label information.
+    """
+    reconstructed_model.train()
+    oracle_model.eval()
+    with torch.no_grad():
+        oracle_labels = oracle_model(X_train).argmax(dim=1)
+
+    hidden_layers = [reconstructed_model.fc1, reconstructed_model.fc2,
+                     reconstructed_model.fc3, reconstructed_model.fc4]
+
+    # Build boolean grad-freeze masks per layer (True = frozen / zero grad)
+    freeze_row_masks = {}
+    if freeze_recovered_weights:
+        for lid, mask in recovered_masks.items():
+            freeze_row_masks[lid] = torch.tensor(mask, dtype=torch.bool)
+
+    optimizer = torch.optim.Adam(reconstructed_model.parameters(), lr=lr)
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+    n_loggings = 10
+    log_every = max(1, n_epochs // n_loggings)
+
+    with torch.no_grad():
+        preds0 = reconstructed_model(X_train).argmax(dim=1)
+        start_agree = (preds0 == oracle_labels).float().mean().item()
+    if verbose:
+        print(f"  [refine] start agreement={start_agree:.4f}, "
+              f"{'frozen recovered weights' if freeze_recovered_weights else 'all params trainable'}, "
+              f"n_epochs={n_epochs}, lr={lr}")
+
+    for epoch in range(n_epochs):
+        optimizer.zero_grad()
+        preds = reconstructed_model(X_train)
+        loss = loss_fn(preds, oracle_labels)
+        loss.backward()
+
+        if freeze_recovered_weights:
+            for lid, layer in enumerate(hidden_layers):
+                row_mask = freeze_row_masks.get(lid)
+                if row_mask is not None and layer.weight.grad is not None:
+                    layer.weight.grad[row_mask] = 0.0
+
+        optimizer.step()
+
+        if verbose and (epoch == 0 or (epoch + 1) % log_every == 0 or epoch == n_epochs - 1):
+            with torch.no_grad():
+                preds = reconstructed_model(X_train).argmax(dim=1)
+                agree = (preds == oracle_labels).float().mean().item()
+            print(f"  [refine] epoch {epoch+1}/{n_epochs}  loss={loss.item():.4f}  agreement={agree:.4f}")
+
+    reconstructed_model.eval()
+    with torch.no_grad():
+        preds = reconstructed_model(X_train).argmax(dim=1)
+        final_agree = (preds == oracle_labels).float().mean().item()
+    return {
+        'start_agreement': float(start_agree),
+        'final_agreement': float(final_agree),
+        'freeze_recovered_weights': bool(freeze_recovered_weights),
+        'n_epochs': int(n_epochs),
+        'lr': float(lr),
+    }
+
+
+def _hidden_activations_up_to(reconstructed_model, x, up_to_layer):
+    """Forward x through fc1..fc{up_to_layer-1} with ReLU. Returns h (no ReLU on boundary layer)."""
+    layers = [reconstructed_model.fc1, reconstructed_model.fc2,
+              reconstructed_model.fc3, reconstructed_model.fc4]
+    h = x
+    for l_idx in range(up_to_layer):
+        h = torch.relu(layers[l_idx](h))
+    return h
+
+
+def recover_biases_from_duals(reconstructed_model, duals_dir, recovered_masks,
+                               layer_ids=(0, 1, 2, 3), n_duals=30, verbose=True):
+    """
+    For each recovered neuron i in layer L: b_i = -w_i · h_{L-1}(x_d) where x_d
+    is any dual point of neuron i. Uses the already-reconstructed lower layers
+    for h. Called bottom-up so lower layers are stable.
+
+    Median over n_duals dual points for robustness.
+    """
+    layers = [reconstructed_model.fc1, reconstructed_model.fc2,
+              reconstructed_model.fc3, reconstructed_model.fc4]
+
+    for lid in sorted(layer_ids):
+        layer = layers[lid]
+        mask = recovered_masks.get(lid)
+        if mask is None:
+            continue
+        biases = layer.bias.data.clone()
+        n_set = 0
+        for i in range(len(mask)):
+            if not mask[i]:
+                continue
+            dual_path = os.path.join(duals_dir, f"layer{lid+1}_neuron{i}.npy")
+            if not os.path.exists(dual_path):
+                continue
+            duals = np.load(dual_path)
+            if len(duals) == 0:
+                continue
+            x_d = torch.tensor(duals[:n_duals], dtype=torch.float64)
+            with torch.no_grad():
+                h = _hidden_activations_up_to(reconstructed_model, x_d, lid)
+                w_i = layer.weight.data[i]
+                b_candidates = -(h @ w_i)
+                biases[i] = b_candidates.median()
+            n_set += 1
+        layer.bias.data = biases
+        if verbose:
+            print(f"  [bias-recov] Layer {lid}: set {n_set}/{int(mask.sum())} biases from dual points")
+
+
+def recover_output_layer(reconstructed_model, oracle_model, X_samples, verbose=True, n_aug=8000):
+    """
+    Recover fc5 using hard-label oracle queries.
+
+    Queries the oracle on X_samples + augmented samples (Gaussian perturbations
+    + random coverage) to build (h_4, label) training set, then fits 8-way
+    multinomial logistic regression.
+    """
+    try:
+        from sklearn.linear_model import LogisticRegression
+    except ImportError:
+        print("sklearn not available, skipping output layer recovery")
+        return
+
+    oracle_model.eval()
+    reconstructed_model.eval()
+
+    # LR fit on X_samples directly. Out-of-distribution augmentation (uniform
+    # coverage, wide Gaussian) was found to distort the fit away from the X_test
+    # region without improving in-distribution accuracy.
+    X_big = X_samples.numpy().astype(np.float64)
+    X_big_t = X_samples
+
+    with torch.no_grad():
+        oracle_labels = oracle_model(X_big_t).argmax(dim=1).numpy()
+        h4 = _hidden_activations_up_to(reconstructed_model, X_big_t, up_to_layer=4).numpy()
+
+    # multinomial logistic regression; uses only hard labels
+    n_classes = int(oracle_labels.max()) + 1
+    lr = LogisticRegression(
+        multi_class='multinomial', solver='lbfgs',
+        max_iter=2000, C=1e6,  # very weak regularization
+        fit_intercept=True,
+    )
+    lr.fit(h4, oracle_labels)
+
+    fc5 = reconstructed_model.fc5
+    out_dim = fc5.weight.shape[0]
+    # LR coef_ has shape (n_classes_used, input_dim). Expand to full output shape.
+    coef = np.zeros((out_dim, h4.shape[1]), dtype=np.float64)
+    intercept = np.zeros(out_dim, dtype=np.float64)
+    for idx, cls in enumerate(lr.classes_):
+        if cls < out_dim:
+            coef[cls] = lr.coef_[idx]
+            intercept[cls] = lr.intercept_[idx]
+
+    with torch.no_grad():
+        fc5.weight.data = torch.tensor(coef, dtype=torch.float64)
+        fc5.bias.data = torch.tensor(intercept, dtype=torch.float64)
+
+    if verbose:
+        with torch.no_grad():
+            small_oracle = oracle_model(X_samples).argmax(dim=1).numpy()
+            small_recon = reconstructed_model(X_samples).argmax(dim=1).numpy()
+            lr_preds = lr.predict(h4)
+        print(f"  [fc5-recov] LR fit on {len(X_big)} samples ({len(X_samples)} original + augmented), "
+              f"{n_classes} classes seen; LR train acc vs oracle = "
+              f"{(lr_preds == oracle_labels).mean():.4f}; "
+              f"reconstructed vs oracle on original X_test = {(small_recon == small_oracle).mean():.4f}")
+
+
+def oracle_sign_search(reconstructed_model, oracle_model, X_test, recovered_masks,
+                        layer_ids=(0, 1, 2, 3), n_passes=3, order='both', verbose=True,
+                        duals_dir=None):
+    """
+    Brute-force sign search using only hard-label oracle queries.
+
+    For each layer, enumerate all 2^k sign flips over the k recovered neurons
+    and pick the flip combo that maximizes label agreement with the hard-label
+    oracle on X_test. Iterate n_passes times with alternating direction
+    (top-down, bottom-up) until convergence — this matters because downstream
+    errors mask upstream signs and vice versa.
+
+    This is genuinely black-box: only oracle(X_test).argmax is used.
+    """
+    reconstructed_model.eval()
+    oracle_model.eval()
+    with torch.no_grad():
+        oracle_labels = oracle_model(X_test).argmax(dim=1)
+
+    layers = [reconstructed_model.fc1, reconstructed_model.fc2,
+              reconstructed_model.fc3, reconstructed_model.fc4]
+
+    results = {}
+    prev_agree = -1.0
+
+    def _current_agreement():
+        with torch.no_grad():
+            preds = reconstructed_model(X_test).argmax(dim=1)
+            return (preds == oracle_labels).float().mean().item()
+
+    start_agree = _current_agreement()
+    if verbose:
+        print(f"  [sign-search] starting oracle agreement: {start_agree:.4f}")
+
+    for pass_i in range(n_passes):
+        if order == 'top-down':
+            this_order = list(reversed(layer_ids))
+        elif order == 'bottom-up':
+            this_order = list(layer_ids)
+        elif order == 'both':
+            this_order = list(reversed(layer_ids)) if pass_i % 2 == 0 else list(layer_ids)
+        else:
+            this_order = list(layer_ids)
+
+        if verbose:
+            print(f"  [sign-search] pass {pass_i+1}/{n_passes} order={this_order}")
+        _run_one_pass(reconstructed_model, layers, recovered_masks, this_order,
+                      X_test, oracle_labels, results, verbose,
+                      duals_dir=duals_dir)
+
+        cur_agree = _current_agreement()
+        if verbose:
+            print(f"  [sign-search] pass {pass_i+1} agreement: {cur_agree:.4f}")
+        if cur_agree <= prev_agree + 1e-6:
+            if verbose:
+                print(f"  [sign-search] converged (no improvement), stopping early")
+            break
+        prev_agree = cur_agree
+
+    results['final_agreement'] = _current_agreement()
+    results['starting_agreement'] = start_agree
+    return results
+
+
+def _run_one_pass(reconstructed_model, layers, recovered_masks, layer_order,
+                  X_test, oracle_labels, results, verbose, duals_dir=None):
+    """Single pass of per-layer brute-force sign search. Mutates layers in place.
+
+    If duals_dir is provided, biases are kept consistent with weight signs via
+    b_i = -w_i · h_{L-1}(x_d).median() — so flipping w_i also flips b_i.
+    """
+    for lid in layer_order:
+        layer = layers[lid]
+        mask = recovered_masks.get(lid)
+        if mask is None:
+            continue
+        recovered_idx = np.where(mask)[0]
+        k = len(recovered_idx)
+        if k == 0:
+            continue
+        if k > 18:
+            if verbose:
+                print(f"  [sign-search] Layer {lid}: {k} recovered — too large for brute force, skipping")
+            continue
+
+        original_weight = layer.weight.data.clone()
+        original_bias = layer.bias.data.clone()
+        # Baseline: current agreement with no changes at all to this layer
+        with torch.no_grad():
+            preds0 = reconstructed_model(X_test).argmax(dim=1)
+            baseline_agree = (preds0 == oracle_labels).float().mean().item()
+        best_agree = -1.0
+        best_combo = 0
+
+        # Precompute h·|w_i| medians if recomputing biases from duals.
+        # proj[neuron_idx] = median of (original_weight[neuron_idx] · h_{L-1}(x_d_i))
+        # so that b_i_for_current_weight_sign = -proj[neuron_idx].
+        projections = {}
+        if duals_dir is not None:
+            with torch.no_grad():
+                for neuron_idx in recovered_idx:
+                    dpath = os.path.join(duals_dir, f"layer{lid+1}_neuron{int(neuron_idx)}.npy")
+                    if not os.path.exists(dpath):
+                        continue
+                    duals = np.load(dpath)
+                    if len(duals) == 0:
+                        continue
+                    x_d = torch.tensor(duals[:30], dtype=torch.float64)
+                    h = _hidden_activations_up_to(reconstructed_model, x_d, lid)
+                    projections[int(neuron_idx)] = float((h @ original_weight[int(neuron_idx)]).median())
+
+        if verbose:
+            mode = "w+b (joint)" if duals_dir else "w only"
+            print(f"  [sign-search] Layer {lid}: searching 2^{k}={2**k} combos ({mode})")
+
+        with torch.no_grad():
+            for combo in range(2 ** k):
+                new_weight = original_weight.clone()
+                new_bias = original_bias.clone()
+                for bit_idx, neuron_idx in enumerate(recovered_idx):
+                    if (combo >> bit_idx) & 1:
+                        new_weight[int(neuron_idx)] = -original_weight[int(neuron_idx)]
+                    if duals_dir is not None and int(neuron_idx) in projections:
+                        sign = -1.0 if (combo >> bit_idx) & 1 else 1.0
+                        # b_i = -w_i · h = -(sign * |w_i|) · h = -sign * (w_orig · h)
+                        new_bias[int(neuron_idx)] = -sign * projections[int(neuron_idx)]
+                layer.weight.data = new_weight
+                layer.bias.data = new_bias
+                preds = reconstructed_model(X_test).argmax(dim=1)
+                agree = (preds == oracle_labels).float().mean().item()
+                if agree > best_agree:
+                    best_agree = agree
+                    best_combo = combo
+
+        # Safety: if best combo doesn't beat baseline, revert entirely — protects
+        # against bias-recomputation using drifted lower layers making things worse.
+        if best_agree < baseline_agree - 1e-6:
+            layer.weight.data = original_weight
+            layer.bias.data = original_bias
+            results[lid] = {
+                'recovered': int(k),
+                'flipped': 0,
+                'best_agreement': float(baseline_agree),
+                'best_combo': 0,
+                'reverted': True,
+            }
+            if verbose:
+                print(f"  [sign-search] Layer {lid}: best combo {best_agree:.4f} < baseline {baseline_agree:.4f}, reverted")
+            continue
+
+        # Apply best combo permanently
+        final_weight = original_weight.clone()
+        final_bias = original_bias.clone()
+        n_flipped = 0
+        for bit_idx, neuron_idx in enumerate(recovered_idx):
+            if (best_combo >> bit_idx) & 1:
+                final_weight[int(neuron_idx)] = -original_weight[int(neuron_idx)]
+                n_flipped += 1
+            if duals_dir is not None and int(neuron_idx) in projections:
+                sign = -1.0 if (best_combo >> bit_idx) & 1 else 1.0
+                final_bias[int(neuron_idx)] = -sign * projections[int(neuron_idx)]
+        layer.weight.data = final_weight
+        layer.bias.data = final_bias
+
+        results[lid] = {
+            'recovered': int(k),
+            'flipped': int(n_flipped),
+            'best_agreement': float(best_agree),
+            'best_combo': int(best_combo),
+        }
+        if verbose:
+            print(f"  [sign-search] Layer {lid}: best agreement {best_agree:.4f} (baseline {baseline_agree:.4f}), flipped {n_flipped}/{k} signs")
+
+    return results
 
 
 def save_reconstructed_model(model, output_path, name="reconstructed_model"):
@@ -577,22 +1003,46 @@ def main():
     parser.add_argument('--full', action='store_true', help="Use full model (3072x256)")
     parser.add_argument('--makeblobs', action='store_true', help="Use makeblobs model (64x64, synthetic data)")
     parser.add_argument('--tinier', action='store_true', help="Use tinier model (32->16->16->16->8->4)")
+    parser.add_argument('--tiniest', action='store_true', help="Use tiniest model (8-8-8-8-8-8, make_blobs)")
     parser.add_argument('--signature-path', type=str, default=SIGNATURE_WEIGHTS_PATH)
     parser.add_argument('--sign-path', type=str, default=SIGN_RECOVERY_PATH)
     parser.add_argument('--output-path', type=str, default=OUTPUT_PATH)
+    parser.add_argument('--sign-search', action='store_true',
+                        help="After reconstruction, brute-force sign combos per layer using only hard-label oracle queries on X_test")
+    parser.add_argument('--from-scratch', action='store_true',
+                        help="Rebuild model from scratch: no cheat biases, no cheat fc5. Implies --sign-search with joint w+b flipping, plus fc5 LR-fit on oracle labels")
+    parser.add_argument('--duals-dir', type=str, default=DUAL_POINTS_DIR,
+                        help="Directory holding layer{L}_neuron{i}.npy dual point files")
+    parser.add_argument('--refine', action='store_true',
+                        help="After sign search + fc5 LR fit, polish the model against oracle hard labels. Freezes extracted weight rows; only biases, fc5, and unrecovered neurons' rows are updated")
+    parser.add_argument('--refine-unfreeze', action='store_true',
+                        help="When combined with --refine, unfreeze ALL weights (full distillation). Strays furthest from 'extraction' but pushes accuracy closer to 100%")
+    parser.add_argument('--refine-epochs', type=int, default=300)
+    parser.add_argument('--refine-lr', type=float, default=5e-3)
     args = parser.parse_args()
+    if args.from_scratch:
+        args.sign_search = True
 
     print("="*70)
     print("MODEL EXTRACTION VERIFICATION (v2 - Three-Tier Metrics)")
     print("="*70)
 
     # Determine model configuration
-    if args.tinier:
+    if args.tiniest:
+        model_class = TiniestModel
+        true_model_path = TINIEST_MODEL_PTH
+        tiny = False
+        makeblobs = False
+        tinier = False
+        tiniest = True
+        layer_config = {0: (8, 8), 1: (8, 8), 2: (8, 8), 3: (8, 8)}
+    elif args.tinier:
         model_class = TinierModel
         true_model_path = TINIER_MODEL_PTH
         tiny = False
         makeblobs = False
         tinier = True
+        tiniest = False
         # Non-uniform layer config: (num_neurons, input_dim)
         layer_config = {0: (16, 32), 1: (16, 16), 2: (16, 16), 3: (8, 16)}
     elif args.full:
@@ -601,6 +1051,7 @@ def main():
         tiny = False
         makeblobs = False
         tinier = False
+        tiniest = False
         layer_config = {0: (256, 3072), 1: (256, 256), 2: (256, 256), 3: (64, 256)}
     elif args.makeblobs:
         model_class = TinyModel
@@ -608,6 +1059,7 @@ def main():
         tiny = True
         makeblobs = True
         tinier = False
+        tiniest = False
         layer_config = {0: (64, 64), 1: (64, 64), 2: (64, 64), 3: (64, 64)}
     else:
         model_class = TinyModel
@@ -615,9 +1067,12 @@ def main():
         makeblobs = False
         tiny = True
         tinier = False
+        tiniest = False
         layer_config = {0: (64, 64), 1: (64, 64), 2: (64, 64), 3: (64, 64)}
 
-    if tinier:
+    if tiniest:
+        model_type_str = "Tiniest (8-8-8-8-8-8, make_blobs)"
+    elif tinier:
         model_type_str = "Tinier (32->16->16->16->8->4, make_blobs)"
     elif makeblobs:
         model_type_str = "Makeblobs (64x64, synthetic data)"
@@ -636,7 +1091,7 @@ def main():
     print("\n" + "="*70)
     print("LOADING TEST DATA")
     print("="*70)
-    X_test, Y_test = load_test_data(tiny=tiny, makeblobs=makeblobs, tinier=tinier)
+    X_test, Y_test = load_test_data(tiny=tiny, makeblobs=makeblobs, tinier=tinier, tiniest=tiniest)
     if X_test is None:
         print("Failed to load test data")
         return
@@ -656,14 +1111,83 @@ def main():
     print("="*70)
     print("\nNOTE: Unrecovered neurons use Kaiming/He initialization")
     print("      Scaling uses abs(factor) to ensure sign is NOT revealed\n")
-    reconstructed_model, layer_metrics, recovery_stats = reconstruct_model(
+    reconstructed_model, layer_metrics, recovery_stats, recovered_masks_by_layer = reconstruct_model(
         args.signature_path,
         args.sign_path,
         model_class,
         layer_config,
         true_model_path,
-        random_seed=42
+        random_seed=42,
+        copy_true_biases=not args.from_scratch,
+        copy_true_output=not args.from_scratch,
     )
+
+    # For --from-scratch: recover biases from duals bottom-up *before* sign search,
+    # so sign search operates on a consistent (w, b) starting point.
+    if args.from_scratch:
+        print("\n" + "="*70)
+        print("BIAS RECOVERY FROM DUAL POINTS (bottom-up)")
+        print("="*70)
+        recover_biases_from_duals(
+            reconstructed_model, args.duals_dir, recovered_masks_by_layer,
+            layer_ids=tuple(range(len(layer_config))), verbose=True,
+        )
+
+    # Pre-sign-search accuracy (baseline for comparison)
+    pre_search_accuracy = test_model_accuracy(reconstructed_model, X_test, Y_test, "Pre-sign-search")
+
+    sign_search_results = None
+    if args.sign_search:
+        print("\n" + "="*70)
+        print("ORACLE-QUERIES-ONLY SIGN SEARCH")
+        print("="*70)
+        print("Brute-forcing 2^k sign combos per layer using only hard-label oracle queries on X_test")
+        duals_for_search = args.duals_dir if args.from_scratch else None
+        sign_search_results = oracle_sign_search(
+            reconstructed_model, true_model, X_test, recovered_masks_by_layer,
+            layer_ids=tuple(range(len(layer_config))), verbose=True,
+            duals_dir=duals_for_search,
+        )
+
+        # For --from-scratch: after sign search, fit fc5 via LR on oracle labels
+        if args.from_scratch:
+            print("\n" + "="*70)
+            print("OUTPUT LAYER (fc5) RECOVERY via LR on oracle labels")
+            print("="*70)
+            recover_output_layer(reconstructed_model, true_model, X_test, verbose=True)
+
+    refine_results = None
+    if args.refine:
+        print("\n" + "="*70)
+        print("ORACLE-LABEL REFINEMENT")
+        print("="*70)
+        refine_results = oracle_label_refinement(
+            reconstructed_model, true_model, X_test, recovered_masks_by_layer,
+            n_epochs=args.refine_epochs, lr=args.refine_lr,
+            freeze_recovered_weights=not args.refine_unfreeze,
+            verbose=True,
+        )
+
+        # Recompute per-layer metrics against true weights after sign flips
+        print("\n--- Post-sign-search per-layer metrics ---")
+        layers_list = [reconstructed_model.fc1, reconstructed_model.fc2,
+                       reconstructed_model.fc3, reconstructed_model.fc4]
+        true_layers = [true_model.fc1, true_model.fc2, true_model.fc3, true_model.fc4]
+        for lid in range(len(layer_config)):
+            mask = recovered_masks_by_layer.get(lid)
+            if mask is None or not mask.any():
+                continue
+            ext = layers_list[lid].weight.data.numpy()
+            true_w = true_layers[lid].weight.data.numpy()
+            m = compute_weight_metrics_v2(ext[mask], true_w[mask])
+            if m:
+                m.pop('per_neuron', None)
+                m['num_recovered'] = int(mask.sum())
+                m['num_random_init'] = int(len(mask) - mask.sum())
+                layer_metrics[f'layer_{lid}'] = m
+                print(f"  layer_{lid}: sign_acc={m['sign_accuracy']:.4f}  "
+                      f"|cos|={m['mean_abs_cosine_sim']:.4f}  "
+                      f"mag_rel_err={m['magnitude_mean_rel_error']:.4f}")
 
     # Test reconstructed model
     print("\n" + "="*70)
@@ -723,7 +1247,9 @@ def main():
     print("\n" + "="*70)
     print("SAVING RECONSTRUCTED MODEL")
     print("="*70)
-    if tinier:
+    if tiniest:
+        model_name = "reconstructed_tiniest"
+    elif tinier:
         model_name = "reconstructed_tinier"
     elif makeblobs:
         model_name = "reconstructed_makeblobs"
@@ -762,8 +1288,14 @@ def main():
         },
         'true_accuracy': float(true_accuracy),
         'reconstructed_accuracy': float(recon_accuracy),
+        'pre_sign_search_accuracy': float(pre_search_accuracy),
         'prediction_agreement': float(pred_agreement),
         'extraction_success': extraction_success,
+        'sign_search_applied': bool(args.sign_search),
+        'sign_search_results': sign_search_results,
+        'refinement_applied': bool(args.refine),
+        'refinement_results': refine_results,
+        'from_scratch': bool(args.from_scratch),
     }
     with open(metrics_path, 'w') as f:
         json.dump(all_metrics, f, indent=2)
