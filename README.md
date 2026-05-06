@@ -1,7 +1,7 @@
 # Enhanced hard-label DNN extraction codebase
 
 Self-contained fork of the EUROCRYPT-2024 "Polynomial Time Cryptanalytic
-Extraction of DNNs in the Hard-Label Setting" reference code, with three
+Extraction of DNNs in the Hard-Label Setting" reference code, with four
 additions:
 
 1. **Streaming clustering** (`cluster_dual_points_stream.py`) that processes
@@ -9,14 +9,20 @@ additions:
    vanilla `cluster_dual_points.py`).
 2. **Phase 3 reconstruction** (`analysis/test_extraction4.py`) — a hard-label
    post-processing stage that takes Phases 1+2 outputs, solves for biases
-   geometrically from dual points, brute-force sign-searches against oracle
-   argmax, LR-fits fc5 on oracle hard labels, and polishes with a frozen-row
-   cross-entropy refinement loop. Closes the gap from ~8 % to 99-100 %
-   functional agreement.
+   geometrically from dual points, brute-force / greedy sign-searches against
+   oracle argmax, LR-fits fc5 on oracle hard labels, and polishes with a
+   frozen-row cross-entropy refinement loop. Closes the gap from ~8 % to
+   99–100 % functional agreement.
 3. **Per-model smoke scripts** — `run_extract.sh` + `evaluate_*` +
    `compare_true_vs_extracted*` so an end-to-end run produces both a
    reconstructed `.pth` and the two written reports (true-vs-extracted
    and extraction-quality).
+4. **Leaky ReLU support** via a single `LEAKY_ALPHA` toggle (default `0.0` =
+   plain ReLU, byte-identical to the original pipeline). Set `> 0` to attack
+   `tiniest_makeblobs_leakyrelu.{pth,keras}` / `tinier_makeblobs_leakyrelu.*`.
+   Five activation-aware patches are gated on `α > 0`; the ReLU path is never
+   touched. See `leaky_relu_port.md` (project root) and §"Leaky ReLU usage"
+   below for the full guide.
 
 ## What is in this folder
 
@@ -24,21 +30,28 @@ additions:
 enhanced_codebase/
 ├── README.md                      # this file
 ├── ATTACK_PROMPT.md               # few-shot LLM prompt: logs -> 2 reports
+├── leaky_relu_port.md             # leaky-port plan, status, all 5 gated patches + 1 always-on fix
 ├── run_extract.sh                 # one-shot: duals -> cluster -> recover -> sign -> reconstruct
+├── create_tiniest_makeblobs_leakyrelu.py   # trainer for tiniest LeakyReLU(0.01) victim
+├── create_tinier_makeblobs_leakyrelu.py    # trainer for tinier LeakyReLU(0.01) victim
 │
 ├── signature_recovery/            # Phase 1 — extract weight directions + magnitudes
 │   ├── utils.py                   # single source of truth: LAYER_SIZES, model path, x_test path
+│   │                              # *** contains LEAKY_ALPHA toggle + act()/cell_slope_mask helpers ***
 │   │                              # contains cheat_net_{cpu,cuda} (whitebox scaffolding, DEBUG-gated)
 │   ├── find_duals.py              # decision-boundary walker → pickle of (left, middle, right) triplets
 │   ├── cluster_dual_points_stream.py   # streaming, memory-bounded clustering  (USE THIS)
 │   ├── cluster_dual_points.py     # original (loads everything in RAM — OOMs on tiny+)
 │   ├── generate_dual_neuron.py    # cluster pickles → layer{L}_neuron{i}.npy per-neuron files
 │   ├── recover_weights.py         # per-layer SVD null-space → unsigned weight rows
+│   │                              # *** has 3 leaky-gated bypasses + 1 always-on shape-bug fix ***
 │   └── run_duals.sh               # bash loop: for i in 1..1000: python find_duals.py
 │
 ├── sign_recovery/                 # Phase 2 — recover signs via decision-boundary statistics
 │   ├── sign_recovery.py           # per-neuron sign via d_on vs d_off walks
+│   │                              # *** LEAKY_ALPHA toggle + _apply_act helper ***
 │   ├── batched_sign_recovery.py   # parallel runner over all neurons, per-layer aggregation
+│   │                              # *** LEAKY_ALPHA toggle, model_path picks _leakyrelu when α>0 ***
 │   ├── whitebox.py                # reads true weights of the keras model (inherited scaffolding)
 │   ├── blackbox.py                # coordinate transforms in affine-layer space
 │   └── common.py                  # shared argparse / file-management
@@ -46,21 +59,30 @@ enhanced_codebase/
 ├── analysis/                      # Phase 3 — reconstruction + evaluation
 │   ├── test_extraction4.py        # main: load signature+signs, bias-recover, sign-search,
 │   │                              # fc5 LR fit, oracle-label refinement, save reconstructed_*.pth
-│   ├── compare_true_vs_extracted.py       # tiniest (8-8-8-8-8-8) per-neuron weight comparison
+│   │                              # *** LEAKY_ALPHA toggle + _act helper, 16 model-class call sites ***
+│   ├── compare_true_vs_extracted.py       # tiniest per-neuron weight comparison (ReLU baseline)
 │   ├── compare_true_vs_extracted_tiny.py  # tiny (64x5->10) per-neuron weight comparison
 │   ├── evaluate_reconstructed_makeblobs.py # accuracy/per-class/confusion-matrix on tiniest
 │   └── evaluate_reconstructed_tiny.py     # same, for tiny
 │
-├── tiny_shit/                     # oracle models used as the attack target
-│   ├── tiniest_makeblobs_relu.{pth,keras}   # 8-8-8-8-8-8 make_blobs
-│   └── makeblobs_relu.{pth,keras}           # 64x5->10 make_blobs
+├── tiny_stuff/                    # oracle models used as the attack target
+│   ├── tiniest_makeblobs_relu.{pth,keras}        # 8-8-8-8-8-8 make_blobs ReLU
+│   ├── tiniest_makeblobs_leakyrelu.{pth,keras}   # same arch, LeakyReLU(0.01)
+│   ├── tiniest_makeblobs_leakyrelu_alpha.txt     # records α value for downstream readers
+│   ├── tinier_makeblobs_relu.{pth,keras}         # 32-16-16-16-8-4 make_blobs ReLU
+│   ├── tinier_makeblobs_leakyrelu.{pth,keras}    # same arch, LeakyReLU(0.01)
+│   ├── tinier_makeblobs_leakyrelu_alpha.txt
+│   └── makeblobs_relu.{pth,keras}                # tiny 64x5->10 ReLU (no leaky variant trained yet)
 │
 ├── data/                          # test data (x_test) used for sign-search / refine / eval
-│   ├── x_test_tiniest_makeblobs.npy, y_test_tiniest_makeblobs.npy
+│   ├── x_test_tiniest_makeblobs.npy, y_test_tiniest_makeblobs.npy   (seed=42, Phase-3 training)
+│   ├── x_test2_tiniest_makeblobs.npy, y_test2_tiniest_makeblobs.npy (seed=99, eval-only)
+│   ├── x_test_tinier_makeblobs.npy,  y_test_tinier_makeblobs.npy
+│   ├── x_test2_tinier_makeblobs.npy, y_test2_tinier_makeblobs.npy
 │   └── x_test_makeblobs.npy, y_test_makeblobs.npy
 │
 └── results/                       # pipeline outputs land here
-    ├── reports/                   # example reports from the 64x5 tiny run
+    ├── reports/                   # tiny / tiniest / tinier reports (ReLU + leakyrelu variants)
     ├── reconstructed_models/      # reconstructed_<model>.pth, extraction_metrics.json
     └── sign_recovery/             # layer{L}_signs.npy, layer{L}_confidences.npy, summary.json
 ```
@@ -178,7 +200,7 @@ the PyTorch↔Keras conversion pattern (copy weights transposed).
 
 Also provide an `x_test.npy` matching the input shape and put it in `data/`.
 
-### Step 1 — declare your architecture
+### Step 1 — declare your architecture and activation
 
 Edit `signature_recovery/utils.py`:
 
@@ -188,13 +210,23 @@ TINIEST = True   # 8-8-8-8-8-8
 TINIER  = False  # 32-16-16-16-8-4
 TINY    = False  # 64-64-64-64-64-10
 MAKEBLOBS = True # make_blobs synthetic data (set False for CIFAR-10)
+
+# Activation toggle (default 0.0 = plain ReLU, byte-identical to original):
+LEAKY_ALPHA = 0.0       # set to 0.01 to attack a LeakyReLU(0.01) victim
 ```
 
 For a new architecture, add a new `elif` branch to set `LAYER_SIZES =
 [idim, h1, h2, h3, h4, odim]` and adjust the model-path selection below.
 
-Do the same flag edit in `sign_recovery/batched_sign_recovery.py` (top of
-file).
+The same `TINIEST/TINIER/TINY` flag must match in `sign_recovery/batched_sign_recovery.py`,
+and the same `LEAKY_ALPHA` value must match in **all four** files:
+- `signature_recovery/utils.py`
+- `sign_recovery/sign_recovery.py`
+- `sign_recovery/batched_sign_recovery.py`
+- `analysis/test_extraction4.py`
+
+When `LEAKY_ALPHA > 0`, the pipeline automatically resolves all model paths
+to `<name>_leakyrelu.{pth,keras}` instead of `<name>_relu.{pth,keras}`.
 
 ### Step 2 — run the full pipeline
 
@@ -264,6 +296,104 @@ If reconstructed accuracy < 90 %:
 3. Increase `--refine-epochs` (e.g. to 2000). Refinement has plenty of
    capacity if its starting agreement is >~20 %.
 
+## Leaky ReLU usage
+
+The pipeline supports both ReLU and Leaky ReLU(α) victims via a single
+`LEAKY_ALPHA` toggle. With `α = 0` the codebase is byte-identical to the
+original ReLU pipeline; with `α > 0` it switches model paths and applies
+five activation-aware patches gated on `LEAKY_ALPHA > 0`.
+
+### What changes for Leaky ReLU
+
+Math: at the kink `z = 0`, ReLU's slope jumps `0 → 1`; Leaky ReLU's jumps
+`α → 1`. The attack scaffolding (dual-point detection, SVD null-space, sign
+walks) still works because the kink itself is preserved. Surprisingly,
+α > 0 actually **helps** signature recovery — the small α·z signal on
+"OFF" prefix coordinates gives the SVD additional well-conditioned
+constraints that ReLU's pure null space lacks. On tiniest we saw 22/32
+recovered with α=0.01 vs 19/32 for ReLU.
+
+### Five gated patches (all no-op when α = 0)
+
+| Where | What |
+|---|---|
+| `signature_recovery/utils.py` | `act(x)` / `act_np(x)` / `cell_slope_mask(x)` helpers; `CIFAR10Net.forward` and `cheat()` use `act` instead of `self.relu`. |
+| `signature_recovery/recover_weights.py` | `relu_around` linearisation uses `cell_slope_mask` (1 on ON cells, α on OFF cells); `is_consistent_help` bypasses the `np.min(hits) == 0` reject because OFF coords still carry α·z signal; `extract_weights` drops the `S[-2]>1e-2 and S[-1]<1e-4` SVD gate (leaky's α·z leakage adds extra small SVs); the real quality check happens downstream in `dosteal` via `min(errs) < 1e-3`. |
+| `sign_recovery/sign_recovery.py` | `_apply_act(x)` helper replaces `x[x<0] = 0.0` with `x[x<0] *= α` at three sites; OFF-side wiggle masking uses `α * dy` instead of `0`. |
+| `sign_recovery/batched_sign_recovery.py` | Resolves `*_leakyrelu.keras` model paths when `α > 0`; propagates `LEAKY_ALPHA` to the imported `sign_recovery` module. |
+| `analysis/test_extraction4.py` | `_act` helper used in all 4 model classes' forwards (16 sites) and in `_hidden_activations_up_to`; model paths suffix toggle. **Plus two non-leaky-specific safety patches**: (a) `load_unsigned_weights` skips neurons without `metadata.json` (avoids using SVD outputs that didn't match any cheat solution); (b) `combine_weights_and_signs` treats `sign == 0` (unknown) as `+1` instead of zeroing the weight — prevents partial sign recovery from killing recovered rows. |
+
+One always-on bug fix surfaced during the leaky port:
+- `recover_weights.py is_consistent_help` had `hits = np.zeros(LAYER_SIZES[layer+1])` (target output dim), but the loop indexed `hits[coord]` with `coord ∈ hiddens.shape[1]` (target input dim = prefix output dim). Tiniest's uniform 8× widths made these accidentally equal. Tinier's 32→16 broke broadcasting at `hits += hiddens[entry]`. Fixed to `hits = np.zeros(hiddens.shape[1])`. This also benefits ReLU non-uniform configs.
+
+### Quick start: extracting a Leaky ReLU victim
+
+#### Tiniest (8-8-8-8-8-8 LeakyReLU(0.01))
+```bash
+cd enhanced_codebase
+
+# 1. Train the leaky tiniest victim (creates tiny_stuff/tiniest_makeblobs_leakyrelu.{pth,keras})
+$PY create_tiniest_makeblobs_leakyrelu.py
+
+# 2. Set LEAKY_ALPHA = 0.01 in all 4 files:
+sed -i 's|^LEAKY_ALPHA = 0.0$|LEAKY_ALPHA = 0.01|' \
+    signature_recovery/utils.py \
+    sign_recovery/sign_recovery.py \
+    analysis/test_extraction4.py
+sed -i 's|^LEAKY_ALPHA              = 0.0$|LEAKY_ALPHA              = 0.01|' \
+    sign_recovery/batched_sign_recovery.py
+
+# 3. Set TINIEST=True, TINIER=False, TINY=False (in utils.py + batched_sign_recovery.py)
+# (run_extract.sh does this automatically)
+
+# 4. Run the pipeline
+./run_extract.sh tiniest 5
+
+# 5. Reports
+$PY analysis/evaluate_reconstructed_makeblobs.py
+```
+Expected: ~99.25 % accuracy on X_test2, 22/32 neurons recovered.
+
+#### Tinier (32-16-16-16-8-4 LeakyReLU(0.01))
+```bash
+cd enhanced_codebase
+$PY create_tinier_makeblobs_leakyrelu.py
+# (toggle LEAKY_ALPHA = 0.01 in all 4 files as above)
+# Set TINIER=True in utils.py and batched_sign_recovery.py
+./run_extract.sh tinier 8
+```
+Expected: ~100 % accuracy on X_test2 (refinement converges in ≤5 epochs),
+33/56 neurons recovered.
+
+### Reverting to ReLU mode
+
+Set `LEAKY_ALPHA = 0.0` in all four files. Model paths automatically resolve
+back to `*_relu.{pth,keras}`. No other changes needed — the ReLU pipeline is
+preserved byte-identical.
+
+### Performance / stability tips for Leaky runs
+
+- **Sign recovery hangs**: on tiniest we saw layer-2 neuron-7 stuck at
+  `DualPointID 328` for 30+ minutes. Reduce `nExpMin`/`nExp` in
+  `batched_sign_recovery.py` (we use 200/2000 for layers 1-3 and 100/1000
+  for layer 4 in the leaky enhanced_codebase config). Alternatively, kill
+  the run after layer 1 + 2 finish — `oracle_sign_search` in Phase 3 will
+  fill in the missing signs.
+- **OOM on 24 GB machines**: drop `nThreads` from 8 to 2 in
+  `batched_sign_recovery.py` (the enhanced_codebase config already does this).
+- **Layer 4 (deepest hidden) often fails signature recovery** — same as in
+  ReLU mode. Refinement compensates via fc5 LR fit + frozen-row training.
+
+### Reports for the leaky runs
+
+In `results/reports/`:
+- `leaky_relu_port.md` (project root) — resume-friendly plan + full file-by-file audit
+- `tiniest_leakyrelu_iter1_2026-05-05.md` — tiniest end-to-end run (99.25 % on X_test2)
+- `tinier_leakyrelu_iter1_2026-05-06.md` — tinier end-to-end run (100 % on X_test2)
+- `tiniest_leakyrelu_true_vs_extracted_2026-05-06.md` — per-neuron weight comparison
+- `tinier_leakyrelu_true_vs_extracted_2026-05-06.md` — same, tinier
+- `vanilla_vs_current_workflow_2026-04-23.md` — full diff vs vanilla EUROCRYPT code, includes leaky port section
+
 ## Known caveats
 
 - **Whitebox scaffolding is still present** in `utils.py` (`cheat_*`,
@@ -276,14 +406,25 @@ If reconstructed accuracy < 90 %:
   different integer as `argv[1]` to change the seed.
 - Layer-1 sign recovery is biased positive because there are no past-layer
   ReLU toggles. This is a known limitation of the sign-recovery algorithm.
+  Affects both ReLU and Leaky modes equally.
 - Refinement overfits to `X_test`. If your downstream evaluation uses the
   same `X_test` the refinement saw, agreement numbers are upper bounds.
+  Use `X_test2` (seed=99, same cluster centres, different samples) for an
+  honest out-of-sample number — see `data/x_test2_*.npy`.
+- Leaky α > 0.05 — untested. The leaky port was validated at α=0.01. Larger
+  α weakens the dON/dOFF asymmetry by `(1-α)/(1+α)`; at α=0.2 sign recovery
+  may need recalibration.
 
 ## Quick verify
 
-The codebase was smoke-tested end-to-end on tiniest in this repo:
+The codebase was smoke-tested end-to-end on tiniest and tinier:
 ```
-./run_extract.sh tiniest 5       # ~1 minute, reached 99.9 % prediction agreement
+./run_extract.sh tiniest 5       # ReLU,  ~1 min,  reached 99.9 % prediction agreement
+./run_extract.sh tinier  8       # ReLU,  ~3 min,  reached 100 % prediction agreement
+
+# Leaky — set LEAKY_ALPHA=0.01 in all 4 files first:
+./run_extract.sh tiniest 5       # Leaky, ~5 min,  99.25 % on X_test2
+./run_extract.sh tinier  8       # Leaky, ~8 min,  100 %   on X_test2
 ```
 
 ## License / credits

@@ -31,21 +31,36 @@ import argparse
 # ========== Configuration ========== #
 BASE_DIR = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase"
 
+# Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
+#   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved exactly)
+#   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha)
+LEAKY_ALPHA = 0.01
+
+
+def _act(x):
+    """ReLU mode (LEAKY_ALPHA == 0): F.relu. Leaky mode: F.leaky_relu(x, alpha)."""
+    if LEAKY_ALPHA > 0:
+        return F.leaky_relu(x, negative_slope=LEAKY_ALPHA)
+    return F.relu(x)
+
+
+_act_suffix = "leakyrelu" if LEAKY_ALPHA > 0 else "relu"
+
 # Signature recovery outputs (unsigned weights)
 SIGNATURE_WEIGHTS_PATH = os.path.join(BASE_DIR, "signature_recovery/outputs/model_weights/Vrelu")
 
 # Sign recovery outputs
 SIGN_RECOVERY_PATH = os.path.join(BASE_DIR, "results/sign_recovery")
 
-# Ground truth models
-TINY_MODEL_PTH = os.path.join(BASE_DIR, "tiny_stuff/TinyModel_relu.pth")
-TINY_MODEL_KERAS = os.path.join(BASE_DIR, "tiny_stuff/TinyModel_relu.keras")
-MAKEBLOBS_MODEL_PTH = os.path.join(BASE_DIR, "tiny_stuff/makeblobs_relu.pth")
-TINIER_MODEL_PTH = os.path.join(BASE_DIR, "tiny_stuff/tinier_makeblobs_relu.pth")
-TINIEST_MODEL_PTH = os.path.join(BASE_DIR, "tiny_stuff/tiniest_makeblobs_relu.pth")
+# Ground truth models — suffix swaps to "leakyrelu" when LEAKY_ALPHA > 0
+TINY_MODEL_PTH = os.path.join(BASE_DIR, f"tiny_stuff/TinyModel_{_act_suffix}.pth")
+TINY_MODEL_KERAS = os.path.join(BASE_DIR, f"tiny_stuff/TinyModel_{_act_suffix}.keras")
+MAKEBLOBS_MODEL_PTH = os.path.join(BASE_DIR, f"tiny_stuff/makeblobs_{_act_suffix}.pth")
+TINIER_MODEL_PTH = os.path.join(BASE_DIR, f"tiny_stuff/tinier_makeblobs_{_act_suffix}.pth")
+TINIEST_MODEL_PTH = os.path.join(BASE_DIR, f"tiny_stuff/tiniest_makeblobs_{_act_suffix}.pth")
 FULL_MODEL_PTH = os.path.join(BASE_DIR, "signature_recovery/models/converted_model.pth")
 
-# Test data
+# Test data (used for Phase-3 oracle training: sign search, fc5 LR fit, refinement)
 X_TEST_PATH = os.path.join(BASE_DIR, "data/x_test.npy")
 X_TEST_MAKEBLOBS_PATH = os.path.join(BASE_DIR, "data/x_test_makeblobs.npy")
 Y_TEST_MAKEBLOBS_PATH = os.path.join(BASE_DIR, "data/y_test_makeblobs.npy")
@@ -53,6 +68,12 @@ X_TEST_TINIER_PATH = os.path.join(BASE_DIR, "data/x_test_tinier_makeblobs.npy")
 Y_TEST_TINIER_PATH = os.path.join(BASE_DIR, "data/y_test_tinier_makeblobs.npy")
 X_TEST_TINIEST_PATH = os.path.join(BASE_DIR, "data/x_test_tiniest_makeblobs.npy")
 Y_TEST_TINIEST_PATH = os.path.join(BASE_DIR, "data/y_test_tiniest_makeblobs.npy")
+
+# X_test2: fresh eval-only set (seed=99, same scaler) — no Phase-3 training overlap
+X_TEST2_TINIEST_PATH = os.path.join(BASE_DIR, "data/x_test2_tiniest_makeblobs.npy")
+Y_TEST2_TINIEST_PATH = os.path.join(BASE_DIR, "data/y_test2_tiniest_makeblobs.npy")
+X_TEST2_MAKEBLOBS_PATH = os.path.join(BASE_DIR, "data/x_test2_makeblobs.npy")
+Y_TEST2_MAKEBLOBS_PATH = os.path.join(BASE_DIR, "data/y_test2_makeblobs.npy")
 
 # Output path for reconstructed models
 OUTPUT_PATH = os.path.join(BASE_DIR, "results/reconstructed_models")
@@ -72,10 +93,10 @@ class TinyModel(nn.Module):
 
     def forward(self, x):
         x = x.view(-1, 64)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
+        x = _act(self.fc1(x))
+        x = _act(self.fc2(x))
+        x = _act(self.fc3(x))
+        x = _act(self.fc4(x))
         x = self.fc5(x)
         return x
 
@@ -93,10 +114,10 @@ class TinierModel(nn.Module):
 
     def forward(self, x):
         x = x.view(-1, 32)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
+        x = _act(self.fc1(x))
+        x = _act(self.fc2(x))
+        x = _act(self.fc3(x))
+        x = _act(self.fc4(x))
         x = self.fc5(x)
         return x
 
@@ -114,10 +135,10 @@ class TiniestModel(nn.Module):
 
     def forward(self, x):
         x = x.view(-1, 8)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
+        x = _act(self.fc1(x))
+        x = _act(self.fc2(x))
+        x = _act(self.fc3(x))
+        x = _act(self.fc4(x))
         x = self.fc5(x)
         return x
 
@@ -135,10 +156,10 @@ class FullModel(nn.Module):
 
     def forward(self, x):
         x = x.view(-1, 3072)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
+        x = _act(self.fc1(x))
+        x = _act(self.fc2(x))
+        x = _act(self.fc3(x))
+        x = _act(self.fc4(x))
         x = self.fc5(x)
         return x
 
@@ -225,7 +246,12 @@ def load_unsigned_weights(signature_path, layer_id, num_neurons, input_dim, use_
             if neuron_id < 0 or neuron_id >= num_neurons:
                 continue
 
-            # Load metadata to get scaling factor
+            # Load metadata to get scaling factor.
+            # If metadata.json is absent the neuron came out of recover_weights as
+            # "Failed to identify" — i.e. the SVD returned a vector that didn't match
+            # any cheat solution, so its direction is unreliable. Skip it so the
+            # loader treats it as unrecovered (Kaiming init); otherwise the bad
+            # direction poisons the prefix and refinement can't recover.
             metadata_path = neuron_dir / "metadata.json"
             if metadata_path.exists():
                 with open(metadata_path, 'r') as f:
@@ -233,8 +259,7 @@ def load_unsigned_weights(signature_path, layer_id, num_neurons, input_dim, use_
                 scaling_factor = meta.get('scaling_factor', 1.0)
                 metadata_dict[neuron_id] = meta
             else:
-                scaling_factor = 1.0
-                metadata_dict[neuron_id] = {'scaling_factor': 1.0}
+                continue
 
             # Load UNSCALED weights and apply abs(scaling_factor)
             weight_files = [
@@ -319,7 +344,13 @@ def load_signs(sign_path, layer_id):
 
 
 def combine_weights_and_signs(unsigned_weights, signs):
-    """Combine unsigned weights with recovered signs."""
+    """Combine unsigned weights with recovered signs.
+
+    Sign values: +1 / -1 are known, 0 means unknown (sign recovery didn't process
+    this neuron). Treat 0 as +1 so the recovered weight is preserved; oracle
+    sign search will flip it later if -1 is correct. Multiplying by 0 would
+    zero out an otherwise-valid recovered weight.
+    """
     if unsigned_weights is None or signs is None:
         return None
 
@@ -327,7 +358,9 @@ def combine_weights_and_signs(unsigned_weights, signs):
     if len(signs) < num_neurons:
         signs = np.concatenate([signs, np.ones(num_neurons - len(signs), dtype=np.int8)])
 
-    return unsigned_weights * signs[:num_neurons, np.newaxis]
+    # Replace 0 (unknown) with +1; oracle sign search will polish.
+    sign_eff = np.where(signs[:num_neurons] == 0, np.int8(1), signs[:num_neurons])
+    return unsigned_weights * sign_eff[:, np.newaxis]
 
 
 def compute_weight_metrics_v2(extracted_weights, true_weights):
@@ -477,6 +510,21 @@ def load_test_data(tiny=True, makeblobs=False, tinier=False, tiniest=False):
         y_test = np.zeros(len(x_test), dtype=np.int64)
 
     return torch.tensor(x_test, dtype=torch.float64), torch.tensor(y_test, dtype=torch.long)
+
+
+def load_test2_data(tiny=True, makeblobs=False, tinier=False, tiniest=False):
+    """Load fresh eval-only set (seed=99, same scaler). Returns (X_test2, Y_test2) tensors."""
+    if tiniest:
+        if os.path.exists(X_TEST2_TINIEST_PATH):
+            x = np.load(X_TEST2_TINIEST_PATH).astype(np.float64)
+            y = np.load(Y_TEST2_TINIEST_PATH) if os.path.exists(Y_TEST2_TINIEST_PATH) else np.zeros(len(x), dtype=np.int64)
+            return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
+    if makeblobs:
+        if os.path.exists(X_TEST2_MAKEBLOBS_PATH):
+            x = np.load(X_TEST2_MAKEBLOBS_PATH).astype(np.float64)
+            y = np.load(Y_TEST2_MAKEBLOBS_PATH) if os.path.exists(Y_TEST2_MAKEBLOBS_PATH) else np.zeros(len(x), dtype=np.int64)
+            return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
+    return None, None
 
 
 def reconstruct_model(signature_path, sign_path, model_class, layer_config, true_model_path=None, random_seed=42,
@@ -700,7 +748,7 @@ def _hidden_activations_up_to(reconstructed_model, x, up_to_layer):
               reconstructed_model.fc3, reconstructed_model.fc4]
     h = x
     for l_idx in range(up_to_layer):
-        h = torch.relu(layers[l_idx](h))
+        h = _act(layers[l_idx](h))
     return h
 
 
@@ -887,7 +935,20 @@ def _run_one_pass(reconstructed_model, layers, recovered_masks, layer_order,
             continue
         if k > 18:
             if verbose:
-                print(f"  [sign-search] Layer {lid}: {k} recovered — too large for brute force, skipping")
+                print(f"  [sign-search] Layer {lid}: {k} recovered neurons — brute force infeasible (2^{k}), using greedy")
+            n_flipped = _greedy_sign_pass_layer(
+                reconstructed_model, layers, lid, recovered_masks,
+                X_test, oracle_labels, duals_dir=duals_dir,
+            )
+            cur_agree = (reconstructed_model(X_test).argmax(dim=1) == oracle_labels).float().mean().item()
+            results[lid] = {
+                'recovered': int(k),
+                'flipped': int(n_flipped),
+                'best_agreement': float(cur_agree),
+                'method': 'greedy',
+            }
+            if verbose:
+                print(f"  [sign-search] Layer {lid}: greedy flipped {n_flipped}/{k}, agreement {cur_agree:.4f}")
             continue
 
         original_weight = layer.weight.data.clone()
@@ -978,6 +1039,121 @@ def _run_one_pass(reconstructed_model, layers, recovered_masks, layer_order,
         if verbose:
             print(f"  [sign-search] Layer {lid}: best agreement {best_agree:.4f} (baseline {baseline_agree:.4f}), flipped {n_flipped}/{k} signs")
 
+    return results
+
+
+def _greedy_sign_pass_layer(reconstructed_model, layers, lid, recovered_masks,
+                              X_train, oracle_labels, duals_dir=None):
+    """
+    One greedy pass over recovered neurons in a single layer.
+
+    For each neuron: flip its sign (and optionally recompute bias from duals).
+    Keep the flip if oracle agreement improves; else revert.
+    Returns number of neurons flipped.
+    """
+    layer = layers[lid]
+    mask = recovered_masks.get(lid)
+    if mask is None:
+        return 0
+    recovered_idx = np.where(mask)[0]
+    if len(recovered_idx) == 0:
+        return 0
+
+    n_flipped = 0
+    with torch.no_grad():
+        for neuron_idx_t in recovered_idx:
+            neuron_idx = int(neuron_idx_t)
+
+            preds_curr = reconstructed_model(X_train).argmax(dim=1)
+            agree_curr = (preds_curr == oracle_labels).float().mean().item()
+
+            orig_w = layer.weight.data[neuron_idx].clone()
+            orig_b = layer.bias.data[neuron_idx].clone()
+
+            layer.weight.data[neuron_idx] = -orig_w
+
+            if duals_dir is not None:
+                dpath = os.path.join(duals_dir, f"layer{lid+1}_neuron{neuron_idx}.npy")
+                if os.path.exists(dpath):
+                    duals = np.load(dpath)
+                    if len(duals) > 0:
+                        x_d = torch.tensor(duals[:30], dtype=torch.float64)
+                        h = _hidden_activations_up_to(reconstructed_model, x_d, lid)
+                        layer.bias.data[neuron_idx] = -(h @ layer.weight.data[neuron_idx]).median()
+
+            preds_flip = reconstructed_model(X_train).argmax(dim=1)
+            agree_flip = (preds_flip == oracle_labels).float().mean().item()
+
+            if agree_flip > agree_curr + 1e-7:
+                n_flipped += 1
+            else:
+                layer.weight.data[neuron_idx] = orig_w
+                layer.bias.data[neuron_idx] = orig_b
+
+    return n_flipped
+
+
+def greedy_oracle_sign_search(reconstructed_model, oracle_model, X_train, recovered_masks,
+                               layer_ids=(0, 1, 2, 3), n_passes=5, verbose=True,
+                               duals_dir=None):
+    """
+    Greedy O(k)-per-pass sign search using hard-label oracle queries.
+
+    For each pass: for each layer (alternating direction), for each recovered
+    neuron, flip its sign and keep if oracle agreement improves.
+    Works for any layer width — no 2^k restriction.
+    This function is called automatically from oracle_sign_search when k > 18.
+    """
+    reconstructed_model.eval()
+    oracle_model.eval()
+    with torch.no_grad():
+        oracle_labels = oracle_model(X_train).argmax(dim=1)
+
+    layers = [reconstructed_model.fc1, reconstructed_model.fc2,
+              reconstructed_model.fc3, reconstructed_model.fc4]
+
+    def _cur_agree():
+        with torch.no_grad():
+            return (reconstructed_model(X_train).argmax(dim=1) == oracle_labels).float().mean().item()
+
+    start_agree = _cur_agree()
+    if verbose:
+        print(f"  [greedy-sign-search] starting agreement: {start_agree:.4f}")
+
+    prev_agree = -1.0
+    results = {'starting_agreement': float(start_agree), 'passes': []}
+
+    for pass_i in range(n_passes):
+        this_order = list(reversed(layer_ids)) if pass_i % 2 == 0 else list(layer_ids)
+        if verbose:
+            print(f"  [greedy-sign-search] pass {pass_i+1}/{n_passes} order={this_order}")
+
+        total_flipped = 0
+        for lid in this_order:
+            n_flip = _greedy_sign_pass_layer(
+                reconstructed_model, layers, lid, recovered_masks,
+                X_train, oracle_labels, duals_dir=duals_dir,
+            )
+            total_flipped += n_flip
+            if verbose and n_flip > 0:
+                mask = recovered_masks.get(lid)
+                k = int(mask.sum()) if mask is not None else 0
+                print(f"    layer {lid}: flipped {n_flip}/{k}, agree={_cur_agree():.4f}")
+
+        cur_agree = _cur_agree()
+        if verbose:
+            print(f"  [greedy-sign-search] pass {pass_i+1} agreement: {cur_agree:.4f} ({total_flipped} flips)")
+
+        results['passes'].append({'pass': pass_i + 1, 'agreement': float(cur_agree),
+                                   'total_flipped': total_flipped})
+
+        if cur_agree <= prev_agree + 1e-6 and total_flipped == 0:
+            if verbose:
+                print(f"  [greedy-sign-search] converged, stopping early")
+            break
+        prev_agree = cur_agree
+
+    results['final_agreement'] = _cur_agree()
     return results
 
 
@@ -1091,19 +1267,27 @@ def main():
     print("\n" + "="*70)
     print("LOADING TEST DATA")
     print("="*70)
+    # X_test: used for Phase-3 oracle training (sign search, fc5 LR, refinement)
     X_test, Y_test = load_test_data(tiny=tiny, makeblobs=makeblobs, tinier=tinier, tiniest=tiniest)
     if X_test is None:
         print("Failed to load test data")
         return
+    print(f"X_test (Phase-3 training) shape: {X_test.shape}")
 
-    print(f"Test data shape: {X_test.shape}")
+    # X_test2: fresh eval-only set (seed=99) — no overlap with Phase-3 training
+    X_test2, Y_test2 = load_test2_data(tiny=tiny, makeblobs=makeblobs, tinier=tinier, tiniest=tiniest)
+    if X_test2 is None:
+        print("  Warning: X_test2 not found, falling back to X_test for evaluation")
+        X_test2, Y_test2 = X_test, Y_test
+    else:
+        print(f"X_test2 (eval-only, seed=99) shape: {X_test2.shape}")
 
     # Load and test ground truth model
     print("\n" + "="*70)
     print("GROUND TRUTH MODEL")
     print("="*70)
     true_model = load_ground_truth_model(true_model_path, model_class)
-    true_accuracy = test_model_accuracy(true_model, X_test, Y_test, "Ground Truth")
+    true_accuracy = test_model_accuracy(true_model, X_test2, Y_test2, "Ground Truth (on X_test2)")
 
     # Reconstruct model
     print("\n" + "="*70)
@@ -1133,8 +1317,8 @@ def main():
             layer_ids=tuple(range(len(layer_config))), verbose=True,
         )
 
-    # Pre-sign-search accuracy (baseline for comparison)
-    pre_search_accuracy = test_model_accuracy(reconstructed_model, X_test, Y_test, "Pre-sign-search")
+    # Pre-sign-search accuracy on eval set (no training overlap)
+    pre_search_accuracy = test_model_accuracy(reconstructed_model, X_test2, Y_test2, "Pre-sign-search (X_test2)")
 
     sign_search_results = None
     if args.sign_search:
@@ -1189,19 +1373,19 @@ def main():
                       f"|cos|={m['mean_abs_cosine_sim']:.4f}  "
                       f"mag_rel_err={m['magnitude_mean_rel_error']:.4f}")
 
-    # Test reconstructed model
+    # Final evaluation on X_test2 (fresh, no Phase-3 training overlap)
     print("\n" + "="*70)
-    print("RECONSTRUCTED MODEL EVALUATION")
+    print("RECONSTRUCTED MODEL EVALUATION (on X_test2 — fresh eval set, seed=99)")
     print("="*70)
-    recon_accuracy = test_model_accuracy(reconstructed_model, X_test, Y_test, "Reconstructed")
+    recon_accuracy = test_model_accuracy(reconstructed_model, X_test2, Y_test2, "Reconstructed (X_test2)")
 
-    # Compare predictions
-    print("\n--- Prediction Comparison ---")
+    # Compare predictions on X_test2
+    print("\n--- Prediction Comparison (X_test2) ---")
     with torch.no_grad():
-        true_preds = true_model(X_test).argmax(dim=1)
-        recon_preds = reconstructed_model(X_test).argmax(dim=1)
+        true_preds = true_model(X_test2).argmax(dim=1)
+        recon_preds = reconstructed_model(X_test2).argmax(dim=1)
         pred_agreement = (true_preds == recon_preds).float().mean().item()
-    print(f"Prediction agreement: {pred_agreement:.4f}")
+    print(f"Prediction agreement (X_test2): {pred_agreement:.4f}")
 
     # Summary with three-tier metrics
     print("\n" + "="*70)

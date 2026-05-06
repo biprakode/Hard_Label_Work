@@ -69,9 +69,15 @@ class CIFAR10NetPrefix(nn.Module):
         self.double()
 
     def relu_around(self, x):
-        mask = (x[:1]>=0).to(torch.float64)
+        # Per-cell linearisation anchored on sample[0]'s pre-activation sign pattern.
+        # ReLU mode (LEAKY_ALPHA == 0): mask is 0/1 — identical to original behaviour.
+        # Leaky mode (LEAKY_ALPHA  > 0): mask is alpha/1 — linearises through the leak.
+        if LEAKY_ALPHA > 0:
+            slope = cell_slope_mask(x[:1])  # 1 on ON cells, alpha on OFF cells
+            return x * slope
+        mask = (x[:1] >= 0).to(torch.float64)
         return x * mask
-        
+
     @torch.no_grad
     def forward_around(self, x):
         x = x.view(-1, IDIM)
@@ -85,7 +91,10 @@ class CIFAR10NetPrefix(nn.Module):
         x = x.view(-1, IDIM)
         if len(self.fcs) == 0: return x
         for layer in self.fcs:
-            x = nn.functional.relu(layer(x))
+            if LEAKY_ALPHA > 0:
+                x = act(layer(x))
+            else:
+                x = nn.functional.relu(layer(x))
         return x
 
 def transfer_weights(source_model, target_model, source_prefix='', target_prefix='fcs'):
@@ -128,13 +137,26 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
         order = np.argsort(hits)
         print("Hits", hits.shape)
 
+        # ReLU mode: zero-hit coords contribute exactly nothing to the SVD constraints,
+        # so the cluster is unrecoverable (original behavior).
+        # Leaky mode (LEAKY_ALPHA > 0): zero-hit coords still contribute alpha*z signal
+        # via forward_around's leaky linearisation, so the SVD can still recover.
         if np.min(hits) == 0 and layer > 0:
             print("Hit some zero times. Mean OK", np.mean(hits!=0))
             print(list(hits))
-            return None, None
+            if LEAKY_ALPHA == 0:
+                return None, None
+            print(f"  [leaky alpha={LEAKY_ALPHA}] proceeding despite zero-hit coords (alpha*z still carries signal)")
         points_subset = []
-        hits = np.zeros(LAYER_SIZES[layer+1])
-        
+        # hits tracks per-coord coverage in the *prefix output* (= input to the
+        # target weight). Original code used LAYER_SIZES[layer+1] (output dim of
+        # the target weight), which only happens to equal hiddens.shape[1] when
+        # input_dim == first_hidden_dim (tiniest's uniform 8x). For tinier
+        # (32->16) or any non-uniform arch, that mismatched the hiddens shape
+        # and broke broadcast at hits += hiddens[entry]. hiddens.shape[1] is
+        # the right size for all layers including layer 0 (prefix=identity).
+        hits = np.zeros(hiddens.shape[1])
+
         for coord in order:
             if hits[coord] >= 4:
                 continue
@@ -213,8 +235,17 @@ def extract_weights(maybe, prefix, layer):
             S, soln = is_consistent(maybe, prefix, layer, True)
 
             print('Singular values', S)
-            if S is not None and S[-2] > 1e-2 and S[-1] < 1e-4:
-                return soln
+            # ReLU mode: strict gate (original). Smallest SV is the kink direction;
+            # second-smallest must be substantially larger so the kink is uniquely identified.
+            # Leaky mode (LEAKY_ALPHA > 0): the OFF-coord alpha*z signal adds extra small SVs,
+            # so the strict gate fails. Return soln whenever SVD ran successfully — the real
+            # quality check happens downstream in dosteal via min(errs) < 1e-3 against
+            # the cheat solution.
+            if S is not None:
+                if LEAKY_ALPHA > 0:
+                    return soln
+                if S[-2] > 1e-2 and S[-1] < 1e-4:
+                    return soln
 
         
 def dosteal(LAYER, cluster):

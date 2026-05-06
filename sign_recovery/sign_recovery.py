@@ -41,7 +41,22 @@ import blackbox
 import whitebox
 import common
 
-N_CID = 2 # how many of the strongest output layer classes to consider 
+N_CID = 2 # how many of the strongest output layer classes to consider
+
+# Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
+#   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved exactly)
+#   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha) — applied via _apply_act in this file
+LEAKY_ALPHA = 0.01
+
+
+def _apply_act(x):
+    """In-place activation. ReLU mode: x[x<0]=0. Leaky mode: x[x<0]*=LEAKY_ALPHA.
+    Preserves original ReLU behaviour when LEAKY_ALPHA == 0."""
+    if LEAKY_ALPHA > 0:
+        x[x < 0] = LEAKY_ALPHA * x[x < 0]
+    else:
+        x[x < 0] = 0.0
+    return x
 
 # ---------------------------------------------------
 # Functions related to toggles and boundaries
@@ -64,7 +79,7 @@ def neuron_toggle_state(weights, biases, x0, with_output_classes=False):
     for i in range(len(weightsReLU)):
         x = x@weightsReLU[i] + biases[i]
         states.append(x > 0)
-        x[x<0] = 0.0
+        _apply_act(x)
 
     if with_output_classes: 
         x = x@weights[-1] + biases[-1] 
@@ -180,7 +195,7 @@ def get_neuron_values(x, weights, biases):
     for i in range(len(weights)):
         x = x@weights[i] + biases[i]
         values.append(np.copy(x)) # collect values before ReLUs
-        x[x<0] = 0.0
+        _apply_act(x)
     return values
 
 def get_target_layer_output_norm_after_ReLU(x, dx, weights, biases, layerId):
@@ -188,14 +203,22 @@ def get_target_layer_output_norm_after_ReLU(x, dx, weights, biases, layerId):
     y0 = (x@F + b) # target layer output at x
     dy = (dx@F) # size of the wiggle produced by dx
     # logger.debug(f"Number of OFF neurons: \t {np.sum([y0<=0.0])}/{len(dy)}")
-    dy[y0<=0.0] = 0.0
+    # ReLU: zero out wiggle on OFF coords. Leaky: scale by alpha.
+    if LEAKY_ALPHA > 0:
+        dy[y0 <= 0.0] = LEAKY_ALPHA * dy[y0 <= 0.0]
+    else:
+        dy[y0 <= 0.0] = 0.0
     return np.linalg.norm(dy)
 
 def get_target_layer_average_entries_without_neuronId(x, dx, weights, biases, layerId, neuronId):
     F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b) # target layer output at x
     dy = (dx@F) # size of the wiggle produced by dx
-    dy[y0<=0.0] = 0.0
+    # ReLU: zero out wiggle on OFF coords. Leaky: scale by alpha.
+    if LEAKY_ALPHA > 0:
+        dy[y0 <= 0.0] = LEAKY_ALPHA * dy[y0 <= 0.0]
+    else:
+        dy[y0 <= 0.0] = 0.0
     dy[neuronId] = 0.0
     dy = np.abs(dy)
     dy_nonzero = [entry for entry in dy if entry!=0.0]

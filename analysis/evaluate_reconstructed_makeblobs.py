@@ -30,6 +30,8 @@ ORACLE_PATH = os.path.join(BASE, "tiny_stuff/tiniest_makeblobs_relu.pth")
 RECON_PATH = os.path.join(BASE, "results/reconstructed_models/reconstructed_tiniest.pth")
 X_TEST_PATH = os.path.join(BASE, "data/x_test_tiniest_makeblobs.npy")
 Y_TEST_PATH = os.path.join(BASE, "data/y_test_tiniest_makeblobs.npy")
+X_TEST2_PATH = os.path.join(BASE, "data/x_test2_tiniest_makeblobs.npy")
+Y_TEST2_PATH = os.path.join(BASE, "data/y_test2_tiniest_makeblobs.npy")
 
 SEED = 42
 N_SAMPLES = 12000
@@ -135,6 +137,15 @@ def main():
         'full':  (X_full, y_full),
     }
 
+    # Load X_test2 (seed=99, same scaler — no Phase-3 training overlap)
+    if os.path.exists(X_TEST2_PATH):
+        x2 = np.load(X_TEST2_PATH).astype(np.float64)
+        y2 = np.load(Y_TEST2_PATH).astype(np.int64) if os.path.exists(Y_TEST2_PATH) else np.zeros(len(x2), dtype=np.int64)
+        sets['test2'] = (x2, y2)
+        print(f"Loaded X_test2 (seed=99, eval-only): shape={x2.shape}")
+    else:
+        print(f"Note: X_test2 not found at {X_TEST2_PATH}")
+
     results = {}
     for name, (X, y) in sets.items():
         oracle_pred = predict(oracle, X)
@@ -155,35 +166,49 @@ def main():
         print(f"  reconstructed agreement (vs oracle) = {agreement:.4f}")
         print(f"  gap (oracle - reconstructed)  = {oracle_acc - recon_acc:+.4f}")
 
-    X, y = sets['test']
-    recon_pred = predict(recon, X)
-    oracle_pred = predict(oracle, X)
-    cm_recon = confusion(y, recon_pred, N_CLASSES)
-    cm_oracle = confusion(y, oracle_pred, N_CLASSES)
-    pc_recon = per_class_accuracy(y, recon_pred, N_CLASSES)
-    pc_oracle = per_class_accuracy(y, oracle_pred, N_CLASSES)
+    for eval_split in ('test', 'test2'):
+        if eval_split not in sets:
+            continue
+        X, y = sets[eval_split]
+        recon_pred = predict(recon, X)
+        oracle_pred = predict(oracle, X)
+        cm_recon = confusion(y, recon_pred, N_CLASSES)
+        cm_oracle = confusion(y, oracle_pred, N_CLASSES)
+        pc_recon = per_class_accuracy(y, recon_pred, N_CLASSES)
+        pc_oracle = per_class_accuracy(y, oracle_pred, N_CLASSES)
+        label = eval_split.upper() + (' (seed=99, eval-only)' if eval_split == 'test2' else ' (seed=42, Phase-3 overlap)')
 
-    print("\n[TEST] per-class accuracy:")
-    print(f"{'class':>6} {'n':>6} {'oracle':>10} {'recon':>10} {'gap':>10}")
-    for oc, rc in zip(pc_oracle, pc_recon):
-        print(f"{oc['class']:>6d} {oc['count']:>6d} "
-              f"{oc['accuracy']:>10.4f} {rc['accuracy']:>10.4f} "
-              f"{oc['accuracy'] - rc['accuracy']:>+10.4f}")
+        print(f"\n[{label}] per-class accuracy:")
+        print(f"{'class':>6} {'n':>6} {'oracle':>10} {'recon':>10} {'gap':>10}")
+        for oc, rc in zip(pc_oracle, pc_recon):
+            print(f"{oc['class']:>6d} {oc['count']:>6d} "
+                  f"{oc['accuracy']:>10.4f} {rc['accuracy']:>10.4f} "
+                  f"{oc['accuracy'] - rc['accuracy']:>+10.4f}")
 
-    print("\n[TEST] confusion matrix (reconstructed, rows=true, cols=pred):")
-    header = "     " + " ".join([f"{c:>4d}" for c in range(N_CLASSES)])
-    print(header)
-    for c in range(N_CLASSES):
-        print(f"{c:>3d}: " + " ".join([f"{v:>4d}" for v in cm_recon[c]]))
+        print(f"\n[{label}] confusion matrix (reconstructed, rows=true, cols=pred):")
+        header = "     " + " ".join([f"{c:>4d}" for c in range(N_CLASSES)])
+        print(header)
+        for c in range(N_CLASSES):
+            print(f"{c:>3d}: " + " ".join([f"{v:>4d}" for v in cm_recon[c]]))
 
-    disagree_mask = recon_pred != oracle_pred
-    n_disagree = int(disagree_mask.sum())
-    disagree_true_acc = float((recon_pred[disagree_mask] == y[disagree_mask]).mean()) if n_disagree else 0.0
-    oracle_on_disagree = float((oracle_pred[disagree_mask] == y[disagree_mask]).mean()) if n_disagree else 0.0
-    print(f"\n[TEST] disagreement analysis:")
-    print(f"  n samples where recon != oracle: {n_disagree}/{len(y)}")
-    print(f"    on these, reconstructed acc vs true = {disagree_true_acc:.4f}")
-    print(f"    on these, oracle acc vs true        = {oracle_on_disagree:.4f}")
+        disagree_mask = recon_pred != oracle_pred
+        n_disagree = int(disagree_mask.sum())
+        disagree_true_acc = float((recon_pred[disagree_mask] == y[disagree_mask]).mean()) if n_disagree else 0.0
+        oracle_on_disagree = float((oracle_pred[disagree_mask] == y[disagree_mask]).mean()) if n_disagree else 0.0
+        print(f"\n[{label}] disagreement analysis:")
+        print(f"  n samples where recon != oracle: {n_disagree}/{len(y)}")
+        print(f"    on these, reconstructed acc vs true = {disagree_true_acc:.4f}")
+        print(f"    on these, oracle acc vs true        = {oracle_on_disagree:.4f}")
+
+        results[eval_split + '_detailed'] = {
+            'per_class': {'oracle': pc_oracle, 'reconstructed': pc_recon},
+            'confusion_matrix': {'oracle': cm_oracle.tolist(), 'reconstructed': cm_recon.tolist()},
+            'disagreement': {
+                'n_disagree': n_disagree,
+                'recon_acc_on_disagreement': disagree_true_acc,
+                'oracle_acc_on_disagreement': oracle_on_disagree,
+            },
+        }
 
     out_path = os.path.join(BASE, "results/reconstructed_models/makeblobs_eval.json")
     with open(out_path, 'w') as f:
@@ -191,18 +216,9 @@ def main():
             'config': {
                 'seed': SEED, 'n_samples': N_SAMPLES, 'n_features': N_FEATURES,
                 'n_classes': N_CLASSES, 'n_test': N_TEST, 'cluster_std': CLUSTER_STD,
+                'seed2': 99, 'note': 'test2 is eval-only (no Phase-3 training overlap)',
             },
             'results': results,
-            'per_class_test': {'oracle': pc_oracle, 'reconstructed': pc_recon},
-            'confusion_matrices_test': {
-                'oracle': cm_oracle.tolist(),
-                'reconstructed': cm_recon.tolist(),
-            },
-            'disagreement_test': {
-                'n_disagree': n_disagree,
-                'recon_acc_on_disagreement': disagree_true_acc,
-                'oracle_acc_on_disagreement': oracle_on_disagree,
-            },
         }, f, indent=2)
     print(f"\nSaved metrics to {out_path}")
 

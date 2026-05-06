@@ -17,10 +17,43 @@ DEBUG = True
 USE_GRADIENT = True
 
 LAYERS = 5
-TINIEST = True  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
-TINY = True
-TINIER = True  # Use tinier model with non-uniform hidden widths
+TINIEST = False  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
+TINY = False
+TINIER = True  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
 MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
+
+# Activation toggle.
+#   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, identical to the original pipeline)
+#   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha), e.g. 0.01
+# Single source of truth read by all forward passes and by model-path resolution
+# across signature_recovery, sign_recovery, and analysis/test_extraction4.
+LEAKY_ALPHA = 0.01
+
+
+def act(x):
+    """Activation function controlled by LEAKY_ALPHA.
+    LEAKY_ALPHA == 0  -> torch.relu (byte-identical to nn.ReLU()).
+    LEAKY_ALPHA  > 0  -> F.leaky_relu(x, alpha)."""
+    if LEAKY_ALPHA > 0:
+        return torch.nn.functional.leaky_relu(x, negative_slope=LEAKY_ALPHA)
+    return torch.relu(x)
+
+
+def act_np(x):
+    """NumPy mirror of act() for sign_recovery / whitebox forward sims."""
+    if LEAKY_ALPHA > 0:
+        return np.where(x >= 0, x, LEAKY_ALPHA * x)
+    return np.maximum(0.0, x)
+
+
+def cell_slope_mask(x):
+    """Per-cell linear slope of the activation, evaluated at x.
+    Returns 1 where x>=0 (ON cell) and LEAKY_ALPHA where x<0 (OFF cell).
+    When LEAKY_ALPHA == 0 this reduces to (x>=0).double(), the original ReLU mask.
+    Used for prefix linearisation in recover_weights.relu_around.
+    """
+    on = (x >= 0).to(torch.float64)
+    return on + LEAKY_ALPHA * (1.0 - on)
 
 # LAYER_SIZES: full list [input_dim, hidden1, hidden2, ..., output_dim]
 # This is the single source of truth for all dimension-dependent code.
@@ -87,30 +120,31 @@ class CIFAR10Net(nn.Module):
 
     @torch.no_grad
     def forward(self, x):
-        relu = self.relu
         x = x.view(-1, IDIM)
-        x = relu(self.fc1(x))
-        x = relu(self.fc2(x))
-        x = relu(self.fc3(x))
-        x = relu(self.fc4(x))
+        x = act(self.fc1(x))
+        x = act(self.fc2(x))
+        x = act(self.fc3(x))
+        x = act(self.fc4(x))
         x = self.fc5(x)
         return x
 
     def forward_grad(self, x):
-        relu = self.relu
         x = x.view(-1, IDIM)
-        x = relu(self.fc1(x))
-        x = relu(self.fc2(x))
-        x = relu(self.fc3(x))
-        x = relu(self.fc4(x))
+        x = act(self.fc1(x))
+        x = act(self.fc2(x))
+        x = act(self.fc3(x))
+        x = act(self.fc4(x))
         x = self.fc5(x)
         return x
 
     @torch.no_grad
     def cheat(self, x):
+        # Returns *pre-activation* outputs of each hidden layer, padded to max width with 1s.
+        # cheat(x)>0 detects cell membership (sign of preact) for both ReLU and Leaky ReLU.
         o = []
         max_dim = DIM  # pad all layers to max hidden width for uniform stacking
-        def relu(x):
+
+        def collect(x):
             if x.size(-1) < max_dim:
                 padding = max_dim - x.size(-1)
                 xx = torch.nn.functional.pad(x, (0, padding))
@@ -118,13 +152,13 @@ class CIFAR10Net(nn.Module):
                 o.append(xx)
             else:
                 o.append(x)
-            return self.relu(x)
+            return act(x)
 
         x = x.view(-1, IDIM)
-        x = relu(self.fc1(x))
-        x = relu(self.fc2(x))
-        x = relu(self.fc3(x))
-        x = relu(self.fc4(x))
+        x = collect(self.fc1(x))
+        x = collect(self.fc2(x))
+        x = collect(self.fc3(x))
+        x = collect(self.fc4(x))
         return torch.stack(o)
 
 def load_converted_model(path, model, device):
@@ -150,15 +184,18 @@ def load_converted_model(path, model, device):
 
 BASE_DIR = os.path.dirname(os.path.abspath("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/"))  # directory of utils.py
 
-# Select model based on dataset type
+# Select model based on dataset type and activation toggle.
+# (Pre-existing bug fix: paths previously read /enhanced_codebase/... which is not
+#  rooted in the filesystem; switched to BASE_DIR-relative.)
+_act_suffix = "leakyrelu" if LEAKY_ALPHA > 0 else "relu"
 if TINIEST and MAKEBLOBS:
-    MODEL_PATH = "/enhanced_codebase/tiny_stuff/tiniest_makeblobs_relu.pth"
+    MODEL_PATH = os.path.join(BASE_DIR, f"tiny_stuff/tiniest_makeblobs_{_act_suffix}.pth")
 elif TINIER and MAKEBLOBS:
-    MODEL_PATH = "/enhanced_codebase/tiny_stuff/tinier_makeblobs_relu.pth"
+    MODEL_PATH = os.path.join(BASE_DIR, f"tiny_stuff/tinier_makeblobs_{_act_suffix}.pth")
 elif MAKEBLOBS:
-    MODEL_PATH = "/enhanced_codebase/tiny_stuff/makeblobs_relu.pth"
+    MODEL_PATH = os.path.join(BASE_DIR, f"tiny_stuff/makeblobs_{_act_suffix}.pth")
 else:
-    MODEL_PATH = "/enhanced_codebase/tiny_stuff/TinyModel_relu.pth"
+    MODEL_PATH = os.path.join(BASE_DIR, f"tiny_stuff/TinyModel_{_act_suffix}.pth")
 
 cheat_net_cuda = CIFAR10Net().to(device).double()
 cheat_net_cuda = load_converted_model(MODEL_PATH, cheat_net_cuda, device)

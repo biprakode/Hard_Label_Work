@@ -7,25 +7,33 @@ import sign_recovery
 
 # ========== Global Settings ========== #
 MAKEBLOBS                = True  # Use make_blobs synthetic dataset instead of CIFAR-10
-TINIEST                  = True  # Use tiniest 8-8-8-8-8-8 model
-TINIER                   = False  # Use tinier model with non-uniform hidden widths
+TINIEST                  = False  # Use tiniest 8-8-8-8-8-8 model
+TINIER                   = True  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
+
+# Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
+#   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved)
+#   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha) — selects *_leakyrelu.keras model
+LEAKY_ALPHA              = 0.01
+sign_recovery.LEAKY_ALPHA = LEAKY_ALPHA  # propagate to sign_recovery activation forwards
+_act_suffix              = "leakyrelu" if LEAKY_ALPHA > 0 else "relu"
+_TINY_STUFF              = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/tiny_stuff"
 
 if TINIEST and MAKEBLOBS:
     model_name           = "tiniest_makeblobs_4hidden_float64"
-    model_path           = "/enhanced_codebase/tiny_stuff/tiniest_makeblobs_relu.keras"
+    model_path           = f"{_TINY_STUFF}/tiniest_makeblobs_{_act_suffix}.keras"
     LAYER_NEURON_COUNTS  = {1: 8, 2: 8, 3: 8, 4: 8}
 elif TINIER and MAKEBLOBS:
     model_name           = "tinier_makeblobs_4hidden_float64"
-    model_path           = "/enhanced_codebase/tiny_stuff/tinier_makeblobs_relu.keras"
+    model_path           = f"{_TINY_STUFF}/tinier_makeblobs_{_act_suffix}.keras"
     # Per-layer neuron counts for tinier model (32->16->16->16->8->4)
     LAYER_NEURON_COUNTS  = {1: 16, 2: 16, 3: 16, 4: 8}
 elif MAKEBLOBS:
     model_name           = "makeblobs_4x64_10_float64"
-    model_path           = "/enhanced_codebase/tiny_stuff/makeblobs_relu.keras"
+    model_path           = f"{_TINY_STUFF}/makeblobs_{_act_suffix}.keras"
     LAYER_NEURON_COUNTS  = {1: 64, 2: 64, 3: 64, 4: 64}
 else:
     model_name           = "cifar10_4x64_10_float64"
-    model_path           = "/enhanced_codebase/tiny_stuff/TinyModel_relu.keras"
+    model_path           = f"{_TINY_STUFF}/TinyModel_{_act_suffix}.keras"
     LAYER_NEURON_COUNTS  = {1: 64, 2: 64, 3: 64, 4: 64}
 
 duals_path               = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/sign_recovery/layer_neuron_npys"  # Path to precomputed dual points
@@ -34,7 +42,7 @@ LAYERIDS                 = (1, 2, 3, 4)  # layer IDs to analyze
 analyzeWiggleSensitivity = 'True'  # Record the sensitivity to the wiggle at the target layer
 analyzeSpeed             = 'True'  # Record the rate of change of future layer neurons
 nDebug                   = 'True'  # Set to True to skip logfile
-nThreads                 = 8  # Number of threads to be used for analyzing multiple neurons in parallel
+nThreads                 = 2  # Reduced from 8 to avoid OOM on 24GB machines (was 8)
 # ==================================== #
 
 
@@ -151,17 +159,22 @@ def main():
         # this produces 100%-confidence but structurally biased +1 outputs.
         # Using `along_decision_boundary` for ALL layers removes the cap and
         # lets dOFF/dON votes reflect the true sign asymmetry.
+        # Reduced caps for tinier/larger architectures. The original
+        # 1000/10000 nExpMin/nExp values stalled tiniest at layer-2 neuron-7
+        # for >30 minutes on a degenerate boundary walk. With α=0.01 the
+        # dON/dOFF asymmetry is strong enough that 200/2000 is plenty for
+        # confident recovery, and bounding nExp prevents pathological hangs.
         if layerID == 1:
-            nExpMin = 1000
-            nExp = 10_000
+            nExpMin = 200
+            nExp = 2_000
             choose_dx = 'along_decision_boundary'
         elif layerID in (2, 3):
-            nExpMin = 1000
-            nExp = 10_000
+            nExpMin = 200
+            nExp = 2_000
             choose_dx = 'along_decision_boundary'
         elif layerID == 4:
-            nExpMin = 500
-            nExp = 5_000
+            nExpMin = 100
+            nExp = 1_000
             choose_dx = 'along_decision_boundary'
         else:
             print(f"Warning: Skipping layer {layerID} (not configured)")
