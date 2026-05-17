@@ -253,9 +253,31 @@ def dosteal(LAYER, cluster):
     transfer_weights(cheat_net_cpu, prefix)
     layer_dir = os.path.join('/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/outputs/model_weights/Vrelu', f"layer_{LAYER}")
     os.makedirs(layer_dir, exist_ok=True)
-    
+
+    # Robustness: drop triplets whose left/middle/right shape doesn't match the
+    # current architecture's input dim. Cluster pickles can carry stale triplets
+    # from a prior architecture run (e.g. tinier 32-dim leftovers in a tiniest
+    # 8-dim run) that survived clustering and would crash np.array(maybe) with
+    # an inhomogeneous-shape error.
+    expected_dim = LAYER_SIZES[0]
+    def _consistent(triplet):
+        if len(triplet) != 3:
+            return False
+        for x in triplet:
+            shape = getattr(x, 'shape', None)
+            if shape != (expected_dim,):
+                return False
+        return True
+
     for cluster_id, maybe in sorted(cluster.items(), key=lambda x: len(x[1])):
-        maybe = np.array(maybe)
+        clean = [t for t in maybe if _consistent(t)]
+        dropped = len(maybe) - len(clean)
+        if dropped:
+            print(f"  [dosteal] cluster {cluster_id}: dropped {dropped}/{len(maybe)} mismatched-shape triplets (expected dim {expected_dim})")
+        if not clean:
+            print(f"  [dosteal] cluster {cluster_id}: no usable triplets after shape filter, skipping")
+            continue
+        maybe = np.array(clean)
 
         if True:
             print()

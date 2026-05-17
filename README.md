@@ -1,18 +1,19 @@
 # Enhanced hard-label DNN extraction codebase
 
 Self-contained fork of the EUROCRYPT-2024 "Polynomial Time Cryptanalytic
-Extraction of DNNs in the Hard-Label Setting" reference code, with four
+Extraction of DNNs in the Hard-Label Setting" reference code, with five
 additions:
 
 1. **Streaming clustering** (`cluster_dual_points_stream.py`) that processes
    the 10M+ triplet corpus in one memory-bounded pass (was OOMing the
    vanilla `cluster_dual_points.py`).
-2. **Phase 3 reconstruction** (`analysis/test_extraction4.py`) — a hard-label
-   post-processing stage that takes Phases 1+2 outputs, solves for biases
-   geometrically from dual points, brute-force / greedy sign-searches against
-   oracle argmax, LR-fits fc5 on oracle hard labels, and polishes with a
-   frozen-row cross-entropy refinement loop. Closes the gap from ~8 % to
-   99–100 % functional agreement.
+2. **Phase 3 reconstruction** (`analysis/extraction_pipeline/`, entry point
+   `analysis/run_extraction.py`) — a hard-label post-processing stage that
+   takes Phases 1+2 outputs, solves for biases geometrically from dual
+   points, brute-force / greedy sign-searches against oracle argmax, LR-fits
+   fc5 on oracle hard labels, and polishes with a frozen-row cross-entropy
+   refinement loop. Closes the gap from ~8 % to 99–100 % functional
+   agreement.
 3. **Per-model smoke scripts** — `run_extract.sh` + `evaluate_*` +
    `compare_true_vs_extracted*` so an end-to-end run produces both a
    reconstructed `.pth` and the two written reports (true-vs-extracted
@@ -23,6 +24,15 @@ additions:
    Five activation-aware patches are gated on `α > 0`; the ReLU path is never
    touched. See `leaky_relu_port.md` (project root) and §"Leaky ReLU usage"
    below for the full guide.
+5. **Modular Phase-3 layout** — the original 1500-line
+   `analysis/test_extraction4.py` was cosmetically split into a
+   `analysis/extraction_pipeline/` package (config, architectures,
+   data_loading, metrics, weight_assembly, bias_recovery,
+   output_layer_recovery, sign_search, refinement, workflow). The legacy
+   `test_extraction4.py` remains as a thin re-export shim, so any existing
+   call site (including `run_extract.sh`) keeps working unchanged. The new
+   recommended entry point is `python3 analysis/run_extraction.py …`. See
+   §"Phase-3 module layout" below for the full map.
 
 ## What is in this folder
 
@@ -57,9 +67,24 @@ enhanced_codebase/
 │   └── common.py                  # shared argparse / file-management
 │
 ├── analysis/                      # Phase 3 — reconstruction + evaluation
-│   ├── test_extraction4.py        # main: load signature+signs, bias-recover, sign-search,
-│   │                              # fc5 LR fit, oracle-label refinement, save reconstructed_*.pth
-│   │                              # *** LEAKY_ALPHA toggle + _act helper, 16 model-class call sites ***
+│   ├── run_extraction.py          # NEW: thin CLI entry point → extraction_pipeline.workflow.main
+│   ├── test_extraction4.py        # legacy shim: re-exports the modular package + main(); kept
+│   │                              # so run_extract.sh and existing scripts keep working
+│   ├── extraction_pipeline/       # NEW: modular split of the old 1500-line test_extraction4.py
+│   │   ├── __init__.py            # module map (overview)
+│   │   ├── config.py              # paths + LEAKY_ALPHA toggle + _act/_act_suffix helpers
+│   │   ├── architectures.py       # TinyModel / TinierModel / TiniestModel / FullModel
+│   │   ├── data_loading.py        # X_test / X_test2 loaders + ground-truth model loader
+│   │   ├── metrics.py             # three-tier (sign / magnitude / combined) metrics + accuracy test
+│   │   ├── weight_assembly.py     # build a model from extracted values (load_unsigned_weights,
+│   │   │                          # load_signs, combine_weights_and_signs, reconstruct_model,
+│   │   │                          # save_reconstructed_model)
+│   │   ├── bias_recovery.py       # recover biases from dual points + _hidden_activations_up_to
+│   │   ├── output_layer_recovery.py # fc5 LR fit on oracle hard labels
+│   │   ├── sign_search.py         # oracle_sign_search + greedy_oracle_sign_search
+│   │   ├── refinement.py          # oracle_label_refinement (frozen-rows distillation)
+│   │   └── workflow.py            # main() orchestration: data → reconstruct → bias-recov →
+│   │                              # sign-search → fc5 LR fit → refine → eval → save
 │   ├── compare_true_vs_extracted.py       # tiniest per-neuron weight comparison (ReLU baseline)
 │   ├── compare_true_vs_extracted_tiny.py  # tiny (64x5->10) per-neuron weight comparison
 │   ├── evaluate_reconstructed_makeblobs.py # accuracy/per-class/confusion-matrix on tiniest
@@ -111,19 +136,33 @@ enhanced_codebase/
 | `blackbox.py` | Coordinate transforms from input space into the affine output space of a given layer. Blackbox *if* you pass it reconstructed weights — whitebox as currently wired. |
 | `common.py` | Shared argparse + `df.pkl` / `df.csv` / `df.md` save helpers. |
 
-### Phase 3 — reconstruction (`analysis/test_extraction4.py`)
+### Phase 3 — reconstruction (`analysis/extraction_pipeline/`)
 
-The single file `analysis/test_extraction4.py` orchestrates:
+Phase 3 is now a small package rather than a single file. The legacy
+`test_extraction4.py` is preserved as a thin re-export shim, so any existing
+call (including `run_extract.sh`) still works. Recommended new entry point:
 
-| Function | Purpose | Oracle interaction |
+```bash
+python3 analysis/run_extraction.py [--tiniest | --tinier | --makeblobs | --full]
+                                   [--from-scratch] [--sign-search]
+                                   [--refine] [--refine-unfreeze]
+                                   [--refine-epochs N] [--refine-lr LR]
+```
+
+The package modules and the function each one owns:
+
+| Module | Public functions | Oracle interaction |
 |---|---|---|
-| `load_unsigned_weights` | Load `neuron_{id}/weights_unscaled.npz`, apply `abs(scaling_factor)` to kill the sign leak. Returns `(W, recovered_mask)`. | none |
-| `load_signs` | Load `layer{L}_signs.npy` and merge with `W` → signed weight matrix. | none |
-| `reconstruct_model` | Build `TinyModel`/`TinyModelReLU`/etc, fill each layer with `signed_weights`, Kaiming-init the unrecovered rows. | none |
-| `recover_biases_from_duals` | For each recovered neuron *i* in layer L: `b_i = -median(w_i · h_{L-1}(x_d))` over 30 dual points. Bottom-up. | none — uses reconstructed forward, not oracle |
-| `oracle_sign_search` | Per layer with ≤18 recovered neurons, enumerate 2^k sign flips (+ joint bias flip via `b_i = -w_i · h`), pick flip combo maximising hard-label agreement with `oracle(X_test).argmax`. | hard-label only |
-| `recover_output_layer` | fc5 LR fit: forward `X_test` through reconstructed fc1..fc4 → features `h_4`; query `oracle(X_test).argmax`; fit multinomial logistic regression from `h_4` to those labels; overwrite `fc5.{weight,bias}`. | hard-label only |
-| `oracle_label_refinement` | 1000 epochs Adam cross-entropy against `oracle(X_test).argmax` labels. **Freezes** rows whose `recovered_mask[i]` is True (zeroes their gradient each step). Leaves biases, fc5, and random-init rows trainable. | hard-label only |
+| `config.py` | `LEAKY_ALPHA`, `_act`, `_act_suffix`, all paths (`SIGNATURE_WEIGHTS_PATH`, `TINIEST_MODEL_PTH`, `X_TEST*_PATH`, …) | none |
+| `architectures.py` | `TinyModel`, `TinierModel`, `TiniestModel`, `FullModel` (forwards routed through `_act`) | none |
+| `data_loading.py` | `load_test_data` / `load_test2_data` / `load_ground_truth_model` | none |
+| `metrics.py` | `compute_weight_metrics_v2` (three-tier: sign / magnitude / combined), `test_model_accuracy` | none |
+| `weight_assembly.py` | `load_unsigned_weights` (sign-blind via `abs(scaling_factor)`); `load_signs`; `combine_weights_and_signs` (`sign==0` ⇒ `+1` so partial sign recovery doesn't zero-out recovered rows); `reconstruct_model` (Kaiming-init unrecovered rows); `save_reconstructed_model` | none |
+| `bias_recovery.py` | `_hidden_activations_up_to`; `recover_biases_from_duals` (`b_i = median(-w_i · h_{L-1}(x_d))` over 30 dual points, bottom-up) | none — uses reconstructed forward |
+| `output_layer_recovery.py` | `recover_output_layer` (fc5 LR fit: forward X_test through reconstructed fc1..fc4 → `h_4`; query `oracle(X_test).argmax`; multinomial LR from `h_4` to those labels; overwrite `fc5.{weight,bias}`) | hard-label only |
+| `sign_search.py` | `oracle_sign_search` (per layer with ≤18 recovered neurons: enumerate 2^k sign flips + joint bias flip; pick combo maximising hard-label agreement); `greedy_oracle_sign_search` (O(k)-per-pass for `k > 18`); auto-falls-back to greedy when the layer is too wide | hard-label only |
+| `refinement.py` | `oracle_label_refinement` (Adam CE against `oracle(X_test).argmax`; freezes rows with `recovered_mask[i]==True`; biases, fc5, random-init rows stay trainable; `--refine-unfreeze` opens everything for full distillation) | hard-label only |
+| `workflow.py` | `main()` — wires every stage in order: data → ground-truth oracle → reconstruct → bias-recov (if `--from-scratch`) → sign-search → fc5 LR fit (if `--from-scratch`) → refinement → eval on X_test2 → save model + extraction_metrics.json | hard-label only |
 
 ### Analysis helpers
 
@@ -223,7 +262,8 @@ and the same `LEAKY_ALPHA` value must match in **all four** files:
 - `signature_recovery/utils.py`
 - `sign_recovery/sign_recovery.py`
 - `sign_recovery/batched_sign_recovery.py`
-- `analysis/test_extraction4.py`
+- `analysis/extraction_pipeline/config.py` (the legacy `analysis/test_extraction4.py`
+  re-exports `LEAKY_ALPHA` from this module — only edit `config.py`)
 
 When `LEAKY_ALPHA > 0`, the pipeline automatically resolves all model paths
 to `<name>_leakyrelu.{pth,keras}` instead of `<name>_relu.{pth,keras}`.
@@ -323,8 +363,9 @@ recovered with α=0.01 vs 19/32 for ReLU.
 | `sign_recovery/batched_sign_recovery.py` | Resolves `*_leakyrelu.keras` model paths when `α > 0`; propagates `LEAKY_ALPHA` to the imported `sign_recovery` module. |
 | `analysis/test_extraction4.py` | `_act` helper used in all 4 model classes' forwards (16 sites) and in `_hidden_activations_up_to`; model paths suffix toggle. **Plus two non-leaky-specific safety patches**: (a) `load_unsigned_weights` skips neurons without `metadata.json` (avoids using SVD outputs that didn't match any cheat solution); (b) `combine_weights_and_signs` treats `sign == 0` (unknown) as `+1` instead of zeroing the weight — prevents partial sign recovery from killing recovered rows. |
 
-One always-on bug fix surfaced during the leaky port:
+Always-on bug fixes surfaced during the leaky port (apply to ReLU mode too):
 - `recover_weights.py is_consistent_help` had `hits = np.zeros(LAYER_SIZES[layer+1])` (target output dim), but the loop indexed `hits[coord]` with `coord ∈ hiddens.shape[1]` (target input dim = prefix output dim). Tiniest's uniform 8× widths made these accidentally equal. Tinier's 32→16 broke broadcasting at `hits += hiddens[entry]`. Fixed to `hits = np.zeros(hiddens.shape[1])`. This also benefits ReLU non-uniform configs.
+- `generate_dual_neuron.py` and `recover_weights.py::dosteal` now shape-filter triplets against `LAYER_SIZES[0]` (the active architecture's input dim) before stacking with `np.array(...)`. Cluster pickles can carry stale triplets from a prior architecture run (e.g. a tinier 32-dim leftover surviving into a tiniest 8-dim run via dirty `signature_recovery/exp/`); without the filter, `np.array([(8,)..., (32,)...])` raised `ValueError: inhomogeneous shape`. The filter is a no-op for clean runs (drops zero triplets) and the dropped count is logged when it kicks in. Verified end-to-end on tiniest LeakyReLU(0.01): 98.60 % on X_test2, 98.55 % prediction agreement.
 
 ### Quick start: extracting a Leaky ReLU victim
 
@@ -394,6 +435,56 @@ In `results/reports/`:
 - `tinier_leakyrelu_true_vs_extracted_2026-05-06.md` — same, tinier
 - `vanilla_vs_current_workflow_2026-04-23.md` — full diff vs vanilla EUROCRYPT code, includes leaky port section
 
+## Phase-3 module layout
+
+The Phase-3 pipeline lives at `analysis/extraction_pipeline/`. The split is
+purely cosmetic — every function preserves its original signature, the CLI
+flags are unchanged, and the legacy `test_extraction4.py` is now a thin shim
+that re-exports the same names from the new package. This means:
+
+- New code → import from `extraction_pipeline.<module>` directly.
+- Old code → keeps working unchanged via `from test_extraction4 import …`.
+- `run_extract.sh` keeps working unchanged (it calls `analysis/test_extraction4.py`).
+
+Dependency graph (top → bottom, no cycles):
+
+```
+                    config.py    (paths, LEAKY_ALPHA, _act, _act_suffix)
+                       │
+                ┌──────┼──────────┐
+                ▼      ▼          ▼
+       architectures  metrics   data_loading
+                │      │          │
+                └──────┴────┬─────┘
+                            ▼
+                    weight_assembly  ──▶  bias_recovery  ──▶  output_layer_recovery
+                                                    │
+                                                    └──▶  sign_search
+                                                              │
+                                                              ▼
+                                                         refinement
+                                                              │
+                                                              ▼
+                                                         workflow (main)
+```
+
+Smoke-tested on this refactor:
+- Tiniest **ReLU** end-to-end via `run_extraction.py --tiniest --sign-search --refine`:
+  98.95 % accuracy on X_test2 (ground truth 99.95 %), 99.00 % prediction agreement.
+- Tinier **LeakyReLU(0.01)** end-to-end via `run_extraction.py --tinier --sign-search --refine`:
+  100.00 % on X_test2, 100 % prediction agreement.
+- Tiniest **LeakyReLU(0.01)** full pipeline (Phase 1 → 2 → refactored Phase 3
+  via `run_extraction.py --tiniest --from-scratch --refine --refine-epochs 500`):
+  98.60 % on X_test2, 98.55 % prediction agreement, 24/32 neurons recovered with
+  |cos|=1.0. (Phase 2 batched_sign_recovery hangs on layer 2 — known issue;
+  Phase 3's oracle sign search brute-forces 2^8 combos per layer to fill in
+  unaggregated layers, so the run completes successfully without finishing
+  Phase 2.)
+
+All three runs produced byte-equivalent output structure to the pre-refactor
+pipeline (same metrics keys, same model file format, same per-layer numbers
+within oracle-sign-search noise tolerance).
+
 ## Known caveats
 
 - **Whitebox scaffolding is still present** in `utils.py` (`cheat_*`,
@@ -425,6 +516,15 @@ The codebase was smoke-tested end-to-end on tiniest and tinier:
 # Leaky — set LEAKY_ALPHA=0.01 in all 4 files first:
 ./run_extract.sh tiniest 5       # Leaky, ~5 min,  99.25 % on X_test2
 ./run_extract.sh tinier  8       # Leaky, ~8 min,  100 %   on X_test2
+```
+
+Phase-3 only (skip Phase 1+2; reuse existing recovery outputs) via the new
+modular entry point:
+```
+# Equivalent to test_extraction4.py — same flags, same outputs:
+python3 analysis/run_extraction.py --tiniest --sign-search --refine --refine-epochs 200
+python3 analysis/run_extraction.py --tinier  --sign-search --refine --refine-epochs 200
+python3 analysis/run_extraction.py --tiniest --from-scratch --refine --refine-epochs 1000
 ```
 
 ## License / credits

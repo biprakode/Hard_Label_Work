@@ -17,9 +17,9 @@ DEBUG = True
 USE_GRADIENT = True
 
 LAYERS = 5
-TINIEST = False  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
-TINY = False
-TINIER = True  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
+TINIEST = True  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
+TINY = True
+TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
 MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
 
 # Activation toggle.

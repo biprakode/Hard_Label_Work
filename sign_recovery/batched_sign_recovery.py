@@ -7,8 +7,8 @@ import sign_recovery
 
 # ========== Global Settings ========== #
 MAKEBLOBS                = True  # Use make_blobs synthetic dataset instead of CIFAR-10
-TINIEST                  = False  # Use tiniest 8-8-8-8-8-8 model
-TINIER                   = True  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
+TINIEST = True  # Use tiniest 8-8-8-8-8-8 model
+TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
 
 # Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
 #   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved)
