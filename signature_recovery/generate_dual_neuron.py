@@ -15,13 +15,13 @@ from utils import LAYER_SIZES, LAYER_BOUNDARIES
 EXPECTED_DIM = LAYER_SIZES[0]
 
 cluster_files = [
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-0.p",
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-1.p",
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-2.p",
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-3.p",
-    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-4.p"
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster-0.p",
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster-1.p",
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster-2.p",
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster-3.p",
+    "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster-4.p"
 ]
-output_dir = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/sign_recovery/layer_neuron_npys"
+output_dir = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/sign_recovery/layer_neuron_npys"
 os.makedirs(output_dir, exist_ok=True)
 
 # Use LAYER_BOUNDARIES from utils (computed dynamically from LAYER_SIZES)

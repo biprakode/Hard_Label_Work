@@ -15,7 +15,8 @@ from pathlib import Path
 
 BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase"
 sys.path.insert(0, os.path.join(BASE, "analysis"))
-from test_extraction4 import load_unsigned_weights, TinyModel  # type: ignore
+from extraction_pipeline.weight_assembly import load_unsigned_weights  # type: ignore
+from extraction_pipeline.architectures import TinyModel  # type: ignore
 
 TRUE_PATH = os.path.join(BASE, "tiny_stuff/makeblobs_relu.pth")
 EXT_PATH  = os.path.join(BASE, "results/reconstructed_models/reconstructed_makeblobs.pth")
@@ -34,7 +35,7 @@ def load_model(path):
 
 
 def get_recovered_masks():
-    """Use the test_extraction4 loader so the mask matches what the built model used."""
+    """Use the extraction_pipeline.weight_assembly loader so the mask matches what the built model used."""
     masks = {}
     layer_offsets = [0, 64, 128, 192]
     for lid, off in enumerate(layer_offsets):

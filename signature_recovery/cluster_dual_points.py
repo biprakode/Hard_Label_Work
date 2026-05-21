@@ -9,7 +9,7 @@ from recover_weights import is_consistent, CIFAR10NetPrefix, transfer_weights
 
 def cheat_cluster(layer):
     duals = []
-    root = '/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1'
+    root = '/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1'
     for f in sorted(os.listdir(root)):
         print(f)
         x = pickle.load(open(os.path.join(root,f),"rb"))
@@ -26,7 +26,7 @@ def cheat_cluster(layer):
             if LAYER_BOUNDARIES[layer] <= flat_idx < LAYER_BOUNDARIES[layer + 1]:
                 cheating[flat_idx].append((left, middle, right))
     
-    pickle.dump(cheating, open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster-%d.p"%layer, "wb"))
+    pickle.dump(cheating, open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster-%d.p"%layer, "wb"))
 
 def refine_cluster(maybe, layer, prefix):
     maybe = np.array(maybe)
@@ -89,7 +89,7 @@ def cluster_slow(layer):
 
         print("WRITING", cluster_id)
         output[cluster_id] = maybe
-        pickle.dump(output, open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1-cluster/%d.p"%layer, "wb"))
+        pickle.dump(output, open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster/%d.p"%layer, "wb"))
 
 if len(sys.argv) > 2 and sys.argv[2] == 'slow':
     cluster_slow(int(sys.argv[1]))

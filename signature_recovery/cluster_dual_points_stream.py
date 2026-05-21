@@ -23,8 +23,8 @@ from utils import (
     LAYER_SIZES,
 )
 
-ROOT = '/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/1'
-OUT_DIR = '/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp'
+ROOT = '/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1'
+OUT_DIR = '/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp'
 
 # Per-neuron cap: recover_weights.py later slices to [:1200], so anything above
 # ~3000 is pure memory pressure with no signal gain.

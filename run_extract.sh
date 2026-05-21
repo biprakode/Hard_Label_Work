@@ -109,7 +109,7 @@ case "$MODEL" in
     tinier)  FLAG='--tinier'  ;;
     tiny)    FLAG='--makeblobs' ;;
 esac
-$PY analysis/test_extraction4.py $FLAG --from-scratch --refine --refine-epochs 1000 \
+$PY analysis/run_extraction.py $FLAG --from-scratch --refine --refine-epochs 1000 \
     | tee /tmp/extract_reconstruct.log | grep -E "recovered|accuracy|agreement|EXTRACTION|Saved|refine]" | tail -40
 
 echo "=== DONE. Model saved to results/reconstructed_models/ ==="

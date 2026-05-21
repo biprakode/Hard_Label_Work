@@ -17,7 +17,7 @@ DEBUG = True
 USE_GRADIENT = True
 
 LAYERS = 5
-TINIEST = True  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
+TINIEST = False  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
 TINY = True
 TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
 MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
@@ -26,7 +26,9 @@ MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
 #   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, identical to the original pipeline)
 #   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha), e.g. 0.01
 # Single source of truth read by all forward passes and by model-path resolution
-# across signature_recovery, sign_recovery, and analysis/test_extraction4.
+# across signature_recovery, sign_recovery, and analysis/extraction_pipeline
+# (Phase-3 reconstruction — formerly the monolithic analysis/test_extraction4.py,
+# now a modular package; the legacy file is preserved as a re-export shim).
 LEAKY_ALPHA = 0.01
 
 
@@ -83,17 +85,17 @@ SEED = 1 if len(sys.argv) < 3 else int(sys.argv[1])
 
 # Load test data based on dataset type
 if TINIEST and MAKEBLOBS:
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/data/x_test_tiniest_makeblobs.npy")
+    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test_tiniest_makeblobs.npy")
     x_test = np.array(x_test, dtype=np.float64)
 elif TINIER and MAKEBLOBS:
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/data/x_test_tinier_makeblobs.npy")
+    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test_tinier_makeblobs.npy")
     x_test = np.array(x_test, dtype=np.float64)
 elif MAKEBLOBS:
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/data/x_test_makeblobs.npy")
+    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test_makeblobs.npy")
     x_test = np.array(x_test, dtype=np.float64)
 else:
     # Load CIFAR-10 data with preprocessing
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/data/x_test.npy")
+    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test.npy")
     if TINY:
         x_test = x_test.mean(1)[:, ::4, ::4]
     x_test = x_test.reshape((-1, IDIM))
@@ -182,7 +184,7 @@ def load_converted_model(path, model, device):
     model.load_state_dict(new_state_dict)
     return model
 
-BASE_DIR = os.path.dirname(os.path.abspath("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/"))  # directory of utils.py
+BASE_DIR = os.path.dirname(os.path.abspath("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/"))  # directory of utils.py
 
 # Select model based on dataset type and activation toggle.
 # (Pre-existing bug fix: paths previously read /enhanced_codebase/... which is not

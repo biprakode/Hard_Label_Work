@@ -284,7 +284,7 @@ cd enhanced_codebase
 - runs `generate_dual_neuron.py`
 - runs `recover_weights.py {0,1,2,3}`
 - runs `batched_sign_recovery.py`
-- runs `analysis/test_extraction4.py --<model> --from-scratch --refine --refine-epochs 1000`
+- runs `analysis/run_extraction.py --<model> --from-scratch --refine --refine-epochs 1000` (the modular Phase-3 CLI; `analysis/test_extraction4.py` remains as a re-export shim if needed)
 
 Outputs:
 - `signature_recovery/exp/1/duals_XXXXX.p` — raw dual triplets
@@ -323,7 +323,7 @@ as the system prompt. See `ATTACK_PROMPT.md` for the exact few-shot template.
 ```python
 import torch
 m = torch.load("results/reconstructed_models/reconstructed_tiniest.pth")
-# or load into the TiniestModel class defined in analysis/test_extraction4.py
+# or load into the TiniestModel class defined in analysis/extraction_pipeline/architectures.py
 ```
 
 If reconstructed accuracy < 90 %:
@@ -361,7 +361,7 @@ recovered with α=0.01 vs 19/32 for ReLU.
 | `signature_recovery/recover_weights.py` | `relu_around` linearisation uses `cell_slope_mask` (1 on ON cells, α on OFF cells); `is_consistent_help` bypasses the `np.min(hits) == 0` reject because OFF coords still carry α·z signal; `extract_weights` drops the `S[-2]>1e-2 and S[-1]<1e-4` SVD gate (leaky's α·z leakage adds extra small SVs); the real quality check happens downstream in `dosteal` via `min(errs) < 1e-3`. |
 | `sign_recovery/sign_recovery.py` | `_apply_act(x)` helper replaces `x[x<0] = 0.0` with `x[x<0] *= α` at three sites; OFF-side wiggle masking uses `α * dy` instead of `0`. |
 | `sign_recovery/batched_sign_recovery.py` | Resolves `*_leakyrelu.keras` model paths when `α > 0`; propagates `LEAKY_ALPHA` to the imported `sign_recovery` module. |
-| `analysis/test_extraction4.py` | `_act` helper used in all 4 model classes' forwards (16 sites) and in `_hidden_activations_up_to`; model paths suffix toggle. **Plus two non-leaky-specific safety patches**: (a) `load_unsigned_weights` skips neurons without `metadata.json` (avoids using SVD outputs that didn't match any cheat solution); (b) `combine_weights_and_signs` treats `sign == 0` (unknown) as `+1` instead of zeroing the weight — prevents partial sign recovery from killing recovered rows. |
+| `analysis/extraction_pipeline/` (formerly `analysis/test_extraction4.py`; the latter is now a re-export shim) | `_act` helper used in all 4 model classes' forwards (16 sites in `architectures.py`) and in `_hidden_activations_up_to` (`bias_recovery.py`); model-path suffix toggle in `config.py`. **Plus two non-leaky-specific safety patches**: (a) `weight_assembly.load_unsigned_weights` skips neurons without `metadata.json` (avoids using SVD outputs that didn't match any cheat solution); (b) `weight_assembly.combine_weights_and_signs` treats `sign == 0` (unknown) as `+1` instead of zeroing the weight — prevents partial sign recovery from killing recovered rows. |
 
 Always-on bug fixes surfaced during the leaky port (apply to ReLU mode too):
 - `recover_weights.py is_consistent_help` had `hits = np.zeros(LAYER_SIZES[layer+1])` (target output dim), but the loop indexed `hits[coord]` with `coord ∈ hiddens.shape[1]` (target input dim = prefix output dim). Tiniest's uniform 8× widths made these accidentally equal. Tinier's 32→16 broke broadcasting at `hits += hiddens[entry]`. Fixed to `hits = np.zeros(hiddens.shape[1])`. This also benefits ReLU non-uniform configs.
@@ -380,7 +380,7 @@ $PY create_tiniest_makeblobs_leakyrelu.py
 sed -i 's|^LEAKY_ALPHA = 0.0$|LEAKY_ALPHA = 0.01|' \
     signature_recovery/utils.py \
     sign_recovery/sign_recovery.py \
-    analysis/test_extraction4.py
+    analysis/extraction_pipeline/config.py
 sed -i 's|^LEAKY_ALPHA              = 0.0$|LEAKY_ALPHA              = 0.01|' \
     sign_recovery/batched_sign_recovery.py
 
@@ -444,7 +444,7 @@ that re-exports the same names from the new package. This means:
 
 - New code → import from `extraction_pipeline.<module>` directly.
 - Old code → keeps working unchanged via `from test_extraction4 import …`.
-- `run_extract.sh` keeps working unchanged (it calls `analysis/test_extraction4.py`).
+- `run_extract.sh` now calls `analysis/run_extraction.py` (the modular CLI). The legacy `analysis/test_extraction4.py` shim is retained for any old scripts that still import it but is no longer the recommended entry point.
 
 Dependency graph (top → bottom, no cycles):
 
@@ -508,20 +508,61 @@ within oracle-sign-search noise tolerance).
 
 ## Quick verify
 
-The codebase was smoke-tested end-to-end on tiniest and tinier:
+### Full 6-model end-to-end results (2026-05-21)
+
+The complete pipeline was run on every architecture × activation combination via
+the new `run_one_model.sh <arch> <activation>` driver (which auto-cleans intermediate
+state, syncs `LEAKY_ALPHA` across the four config files, runs Phase 1→2→3, and
+generates a per-model comparison report via `analysis/compare_true_vs_extracted_v2.py`).
+
+| Model | Phase-1 recovered | mean \|cos\| | sign acc | X_test2 acc | agreement | wall time |
+|---|---|---|---|---|---|---|
+| tiniest_relu       | 24/32 (75 %) | 1.000 | 0.610 | 98.95 % | 98.90 % | 135 s |
+| tiniest_leakyrelu  | 23/32 (72 %) | 1.000 | 0.451 | 99.20 % | 99.20 % | 115 s |
+| tinier_relu        | 30/56 (54 %) | 1.000 | 0.458 | 100.00 % | 100.00 % | 917 s |
+| tinier_leakyrelu   | 37/56 (66 %) | 1.000 | 0.548 | 100.00 % | 100.00 % | 976 s |
+| tiny_relu          | 157/256 (61 %) | 1.000 | 0.528 | 100.00 % | 100.00 % | ~18 hr |
+| **tiny_leakyrelu** | **230/256 (90 %)** | **1.000** | **0.525** | **100.00 %** | **100.00 %** | **~18.8 hr** |
+
+**Per-model true-vs-extracted reports:** `paper_notes/section3/reports/<tag>_true_vs_extracted.md`
+
+**Section 3 analysis notes:** `paper_notes/section3/` (six markdown files + INDEX)
+
+Highlights:
+
+- **All 6 models achieve 98.95-100 % prediction agreement with the oracle on X_test2** using exactly 3 batched `oracle(X).argmax(dim=1)` queries.
+- **Mean \|cos\| = 1.000 on every recovered neuron** across all 6 runs.
+- **Leaky beats ReLU more at scale.** tinier: +7 neurons, tiny: **+73 neurons** (most dramatically at fc4: leaky 57/64 vs ReLU 0/64).
+- **Functional accuracy is decoupled from recovery rate.** tiny_relu (61 % recovered) and tiny_leakyrelu (90 % recovered) both hit 100 % on X_test2.
+
+### One-shot driver
+
+```bash
+cd enhanced_codebase/Hard_Label_Work
+PYTHON_BIN=/path/to/python3 ./run_one_model.sh <arch> <activation>
+# arch:        tiniest | tinier | tiny
+# activation:  relu    | leakyrelu
+```
+
+Each invocation cleans previous intermediate state, configures `LEAKY_ALPHA` and arch booleans, runs the full Phase 1→2→3 pipeline (find_duals → cluster → recover_weights → batched_sign_recovery → run_extraction.py), and writes `paper_notes/section3/reports/<arch>_<activation>_true_vs_extracted.{md,json}`.
+
+For large architectures with high memory consumption (tiny), you may want to interrupt after find_duals to restart and free memory. Use:
+
+```bash
+./run_from_cluster.sh <arch> <activation>
+```
+
+This skips the clean step and find_duals, starting from cluster onwards using the already-produced dual files in `signature_recovery/exp/1/`.
+
+### Smaller smoke tests
+
 ```
 ./run_extract.sh tiniest 5       # ReLU,  ~1 min,  reached 99.9 % prediction agreement
 ./run_extract.sh tinier  8       # ReLU,  ~3 min,  reached 100 % prediction agreement
-
-# Leaky — set LEAKY_ALPHA=0.01 in all 4 files first:
-./run_extract.sh tiniest 5       # Leaky, ~5 min,  99.25 % on X_test2
-./run_extract.sh tinier  8       # Leaky, ~8 min,  100 %   on X_test2
 ```
 
-Phase-3 only (skip Phase 1+2; reuse existing recovery outputs) via the new
-modular entry point:
+Phase-3 only (skip Phase 1+2; reuse existing recovery outputs):
 ```
-# Equivalent to test_extraction4.py — same flags, same outputs:
 python3 analysis/run_extraction.py --tiniest --sign-search --refine --refine-epochs 200
 python3 analysis/run_extraction.py --tinier  --sign-search --refine --refine-epochs 200
 python3 analysis/run_extraction.py --tiniest --from-scratch --refine --refine-epochs 1000

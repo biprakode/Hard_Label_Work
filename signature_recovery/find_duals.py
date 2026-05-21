@@ -230,10 +230,10 @@ def main():
             all_points.append((left, dual, right))
 
 
-    if not os.path.exists("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/%d"%SEED):
-        os.makedirs("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/%d"%SEED)
+    if not os.path.exists("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/%d"%SEED):
+        os.makedirs("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/%d"%SEED)
     import pickle
-    pickle.dump(all_points, open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/signature_recovery/exp/%d/duals_%08d.p"%(SEED,random.randint(0, 1000000)),"wb"))
+    pickle.dump(all_points, open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/%d/duals_%08d.p"%(SEED,random.randint(0, 1000000)),"wb"))
     
     print("Finished")
         
