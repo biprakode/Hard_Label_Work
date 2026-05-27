@@ -33,6 +33,17 @@ additions:
    call site (including `run_extract.sh`) keeps working unchanged. The new
    recommended entry point is `python3 analysis/run_extraction.py …`. See
    §"Phase-3 module layout" below for the full map.
+6. **Batched PyTorch dual search** (`signature_recovery/torch_impl/`,
+   `run_duals_torch.sh`) — a drop-in replacement for the Phase-1 bottleneck.
+   `find_duals.py`'s single-sample boundary walk is reimplemented as B
+   independent walks running in lockstep, so every oracle/gradient call
+   becomes one batched forward pass; a `torch.multiprocessing` wrapper runs W
+   workers in parallel. **No algorithm changes** — same constants, same
+   `(left, middle, right)` pickle format; the rest of the pipeline consumes
+   the output unchanged. On a 14-core CPU the **tiny dual search dropped from
+   ~18 h to ~24 min (≈44×)** while reproducing the documented tiny_relu result
+   (100 % functional agreement, |cos|=1.0, 154/256 recovered). See
+   §"Batched PyTorch dual search" below.
 
 ## What is in this folder
 
@@ -42,6 +53,7 @@ enhanced_codebase/
 ├── ATTACK_PROMPT.md               # few-shot LLM prompt: logs -> 2 reports
 ├── leaky_relu_port.md             # leaky-port plan, status, all 5 gated patches + 1 always-on fix
 ├── run_extract.sh                 # one-shot: duals -> cluster -> recover -> sign -> reconstruct
+├── run_duals_torch.sh             # NEW: drop-in batched/parallel replacement for STEP-2 find_duals
 ├── create_tiniest_makeblobs_leakyrelu.py   # trainer for tiniest LeakyReLU(0.01) victim
 ├── create_tinier_makeblobs_leakyrelu.py    # trainer for tinier LeakyReLU(0.01) victim
 │
@@ -55,7 +67,12 @@ enhanced_codebase/
 │   ├── generate_dual_neuron.py    # cluster pickles → layer{L}_neuron{i}.npy per-neuron files
 │   ├── recover_weights.py         # per-layer SVD null-space → unsigned weight rows
 │   │                              # *** has 3 leaky-gated bypasses + 1 always-on shape-bug fix ***
-│   └── run_duals.sh               # bash loop: for i in 1..1000: python find_duals.py
+│   ├── run_duals.sh               # bash loop: for i in 1..1000: python find_duals.py
+│   ├── torch_impl/                # NEW: batched PyTorch port of the dual search (≈44× on tiny)
+│   │   ├── find_duals_torch.py    # B boundary walks in lockstep; identical triplet format
+│   │   └── parallel_duals.py      # torch.multiprocessing wrapper (--impl torch | subprocess)
+│   ├── MIGRATION_NOTES.md         # Phase-A dataflow + interface contract + baseline profile
+│   └── MIGRATION_RESULTS.md       # validation: format/recovery equivalence, speed, full tiny run
 │
 ├── sign_recovery/                 # Phase 2 — recover signs via decision-boundary statistics
 │   ├── sign_recovery.py           # per-neuron sign via d_on vs d_off walks
@@ -485,6 +502,66 @@ All three runs produced byte-equivalent output structure to the pre-refactor
 pipeline (same metrics keys, same model file format, same per-layer numbers
 within oracle-sign-search noise tolerance).
 
+## Batched PyTorch dual search
+
+`find_duals.py` is >90 % of Phase-1 wall time: it walks the decision boundary
+one point at a time, issuing hundreds of single-sample oracle/gradient calls
+per dual point, and the original driver runs it in a *sequential* shell loop.
+`signature_recovery/torch_impl/` reimplements exactly this walk with **B
+independent walks advancing in lockstep**, so each single-sample call becomes
+one batched forward pass, and `parallel_duals.py` runs **W workers** at once.
+
+This is a pure migration — **no algorithm changes**. Every numerical constant
+(step sweep `10**arange(-5,5,.1)`, guards `>10`/`≤1e-4`, binary-search `1e-8`,
+`|gap|<1e-10`, Newton `1e-13`/10 iters, refine fallback) is preserved, the walk
+is unseeded exactly like the original, and the output is the byte-compatible
+`list[(left, middle, right)]` pickle in `exp/{SEED}/`. Downstream
+(`cluster_dual_points_stream.py` onward) is unchanged. `float64` throughout;
+CPU-first (works on `device='cuda'` by moving the model, untested). The original
+`find_duals.py` is untouched and still runs standalone.
+
+### Usage (drop-in for run_extract.sh / run_one_model.sh STEP 2)
+
+```bash
+cd enhanced_codebase/Hard_Label_Work
+# arch/activation come from utils.py toggles (set them first, like the original)
+./run_duals_torch.sh <ITERS> <WORKERS> <BATCH> <IMPL>
+#   ITERS    pickle rounds (≈ find_duals.py invocations)
+#   WORKERS  concurrent processes        (default cores/2)
+#   BATCH    walks per batch, torch impl  (default 256)
+#   IMPL     torch | subprocess           (default torch)
+
+# tiniest:  ./run_duals_torch.sh 9   8 256 torch     # ~6 s
+# tiny:     ./run_duals_torch.sh 500 8 256 torch     # ~24 min (was ~18 h)
+```
+Then continue with the unchanged `cluster_dual_points_stream.py → generate_dual_neuron.py
+→ recover_weights.py {0..3} → batched_sign_recovery.py → run_extraction.py`.
+
+`--impl subprocess` runs the original `find_duals.py` in parallel processes
+(zero-change baseline); `--impl torch` (default) uses the batched finder.
+
+### Validated results
+
+| | NumPy (original) | Torch (this port) |
+|---|---|---|
+| tiniest, 9 rounds, 8 workers | ~75–135 s | **5–9 s** (~10–25×) |
+| **tiny, full dual search** | **~18 h** | **24.3 min** (~44×) |
+| tiny signature recovery | 157/256 | **154/256** (matches; fc4 0/64 as expected for ReLU) |
+| tiny functional agreement (X_test2) | 100 % | **100 %** |
+| triplet format / recovery rate | — | identical / ≥ NumPy on every layer |
+
+Two efficiency refinements (recovery-neutral): **lane compaction** drops
+finished walks from the batch each iteration, and a **`max_outer` cap** bounds
+a rare "marathon lane" that would otherwise hold up a round. Full write-up in
+`signature_recovery/MIGRATION_RESULTS.md`; dataflow + interface contract in
+`signature_recovery/MIGRATION_NOTES.md`.
+
+### Not yet ported (secondary)
+After the dual search, `cluster_dual_points_stream.py` (~6.5 min on tiny) and
+`batched_sign_recovery.py` (~30 min) become the largest costs — both original
+code, out of scope here. Clustering is the obvious next batching target
+(batch K triplets per `cheat()` forward).
+
 ## Known caveats
 
 - **Whitebox scaffolding is still present** in `utils.py` (`cheat_*`,
@@ -534,6 +611,12 @@ Highlights:
 - **Mean \|cos\| = 1.000 on every recovered neuron** across all 6 runs.
 - **Leaky beats ReLU more at scale.** tinier: +7 neurons, tiny: **+73 neurons** (most dramatically at fc4: leaky 57/64 vs ReLU 0/64).
 - **Functional accuracy is decoupled from recovery rate.** tiny_relu (61 % recovered) and tiny_leakyrelu (90 % recovered) both hit 100 % on X_test2.
+
+> **Note on wall time:** the `~18 hr` figures above are the original sequential
+> NumPy `find_duals`. The batched PyTorch port (§"Batched PyTorch dual search")
+> reproduces tiny_relu — 154/256 recovered, 100 % agreement — with the dual
+> search in **~24 min** instead of ~18 h. The other steps (cluster, recover,
+> sign, Phase 3) are unchanged.
 
 ### One-shot driver
 
