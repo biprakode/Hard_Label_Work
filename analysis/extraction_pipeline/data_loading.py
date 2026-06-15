@@ -1,9 +1,15 @@
 """
 Test data loaders + ground-truth model loader.
 
-Two test sets are surfaced:
+Three test sets are surfaced:
     * X_test  — used for Phase-3 oracle training (sign search, fc5 LR, refinement)
-    * X_test2 — fresh eval-only set (seed=99, same scaler) used for final scoring
+    * X_test2 — second oracle-queryable slice. Legacy default = eval-only;
+                under the enhanced pipeline it is promoted into the training tier
+                so X_train_phase3 = X_test ∪ X_test2 (20K queries).
+    * X_test3 — CIFAR-only. Held-out eval + early-stop watchdog. Never queried,
+                never used for fc5 LR or sign-flip decisions other than
+                restart-selection (see sign_search). Only available for the
+                CIFAR flagship arch; returns (None, None) for tiny/makeblobs.
 """
 
 import os
@@ -11,13 +17,25 @@ import numpy as np
 import torch
 
 from .config import (
-    X_TEST_PATH,
+    X_TEST_PATH, Y_TEST_PATH,
+    X_TEST2_CIFAR_PATH,     Y_TEST2_CIFAR_PATH,
+    X_TEST3_CIFAR_PATH,     Y_TEST3_CIFAR_PATH,
     X_TEST_MAKEBLOBS_PATH,  Y_TEST_MAKEBLOBS_PATH,
     X_TEST_TINIER_PATH,     Y_TEST_TINIER_PATH,
     X_TEST_TINIEST_PATH,    Y_TEST_TINIEST_PATH,
     X_TEST2_TINIEST_PATH,   Y_TEST2_TINIEST_PATH,
+    X_TEST2_TINIER_PATH,    Y_TEST2_TINIER_PATH,
     X_TEST2_MAKEBLOBS_PATH, Y_TEST2_MAKEBLOBS_PATH,
+    X_TEST3_MAKEBLOBS_PATH, Y_TEST3_MAKEBLOBS_PATH,
+    X_TEST3_TINIER_PATH,    Y_TEST3_TINIER_PATH,
+    X_TEST3_TINIEST_PATH,   Y_TEST3_TINIEST_PATH,
 )
+
+
+def _cifar_x(raw):
+    """raw uint8 (N,...) -> [-1,1] float64 (N,3072). Matches utils.py else branch."""
+    x = raw.reshape(-1, 3072).astype(np.float64)
+    return x / 255.0 * 2 - 1
 
 
 def load_ground_truth_model(model_path, model_class, device='cpu'):
@@ -124,18 +142,20 @@ def load_test_data(tiny=True, makeblobs=False, tinier=False, tiniest=False):
         if x_test.shape[1] > 8:
             x_test = x_test[:, ::4, ::4]
         x_test = x_test.reshape(-1, 64)
+        x_test = x_test.astype(np.float64) / 255.0 * 2 - 1
     else:
-        x_test = x_test.reshape(-1, 3072)
+        x_test = _cifar_x(x_test)
 
-    x_test = x_test.astype(np.float64)
-    x_test = x_test / 255.0 * 2 - 1
-
-    try:
-        import tensorflow as tf
-        (_, _), (_, y_test) = tf.keras.datasets.cifar10.load_data()
-        y_test = y_test.squeeze()
-    except Exception:
-        y_test = np.zeros(len(x_test), dtype=np.int64)
+    # Labels: prefer the staged data/y_test.npy (no TF dependency); else TF; else zeros.
+    if os.path.exists(Y_TEST_PATH):
+        y_test = np.load(Y_TEST_PATH).squeeze()
+    else:
+        try:
+            import tensorflow as tf
+            (_, _), (_, y_test) = tf.keras.datasets.cifar10.load_data()
+            y_test = y_test.squeeze()
+        except Exception:
+            y_test = np.zeros(len(x_test), dtype=np.int64)
 
     return torch.tensor(x_test, dtype=torch.float64), torch.tensor(y_test, dtype=torch.long)
 
@@ -149,6 +169,13 @@ def load_test2_data(tiny=True, makeblobs=False, tinier=False, tiniest=False):
                  if os.path.exists(Y_TEST2_TINIEST_PATH)
                  else np.zeros(len(x), dtype=np.int64))
             return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
+    if tinier:
+        if os.path.exists(X_TEST2_TINIER_PATH):
+            x = np.load(X_TEST2_TINIER_PATH).astype(np.float64)
+            y = (np.load(Y_TEST2_TINIER_PATH)
+                 if os.path.exists(Y_TEST2_TINIER_PATH)
+                 else np.zeros(len(x), dtype=np.int64))
+            return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
     if makeblobs:
         if os.path.exists(X_TEST2_MAKEBLOBS_PATH):
             x = np.load(X_TEST2_MAKEBLOBS_PATH).astype(np.float64)
@@ -156,4 +183,53 @@ def load_test2_data(tiny=True, makeblobs=False, tinier=False, tiniest=False):
                  if os.path.exists(Y_TEST2_MAKEBLOBS_PATH)
                  else np.zeros(len(x), dtype=np.int64))
             return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
+    # full CIFAR flagship: held-out train slice (raw uint8), preprocessed to [-1,1]
+    if not (tiny or makeblobs or tinier or tiniest) and os.path.exists(X_TEST2_CIFAR_PATH):
+        x = _cifar_x(np.load(X_TEST2_CIFAR_PATH))
+        y = (np.load(Y_TEST2_CIFAR_PATH).squeeze()
+             if os.path.exists(Y_TEST2_CIFAR_PATH)
+             else np.zeros(len(x), dtype=np.int64))
+        return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
     return None, None
+
+
+def load_test3_data(tiny=True, makeblobs=False, tinier=False, tiniest=False):
+    """Third disjoint draw — held-out eval + early-stop watchdog. Never queried.
+
+    For make_blobs arches the draw uses seed=123 (X_test=42, X_test2=99,
+    X_test3=123 — all disjoint). For the CIFAR flagship it is the train slice
+    10000-19999. Returns (None, None) when the data file is missing so callers
+    fall back gracefully on pre-Fix-A runs.
+    """
+    if tiniest:
+        if not os.path.exists(X_TEST3_TINIEST_PATH):
+            return None, None
+        x = np.load(X_TEST3_TINIEST_PATH).astype(np.float64)
+        y = (np.load(Y_TEST3_TINIEST_PATH)
+             if os.path.exists(Y_TEST3_TINIEST_PATH)
+             else np.zeros(len(x), dtype=np.int64))
+        return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
+    if tinier:
+        if not os.path.exists(X_TEST3_TINIER_PATH):
+            return None, None
+        x = np.load(X_TEST3_TINIER_PATH).astype(np.float64)
+        y = (np.load(Y_TEST3_TINIER_PATH)
+             if os.path.exists(Y_TEST3_TINIER_PATH)
+             else np.zeros(len(x), dtype=np.int64))
+        return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
+    if makeblobs:
+        if not os.path.exists(X_TEST3_MAKEBLOBS_PATH):
+            return None, None
+        x = np.load(X_TEST3_MAKEBLOBS_PATH).astype(np.float64)
+        y = (np.load(Y_TEST3_MAKEBLOBS_PATH)
+             if os.path.exists(Y_TEST3_MAKEBLOBS_PATH)
+             else np.zeros(len(x), dtype=np.int64))
+        return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)
+    # CIFAR flagship
+    if not os.path.exists(X_TEST3_CIFAR_PATH):
+        return None, None
+    x = _cifar_x(np.load(X_TEST3_CIFAR_PATH))
+    y = (np.load(Y_TEST3_CIFAR_PATH).squeeze()
+         if os.path.exists(Y_TEST3_CIFAR_PATH)
+         else np.zeros(len(x), dtype=np.int64))
+    return torch.tensor(x, dtype=torch.float64), torch.tensor(y, dtype=torch.long)

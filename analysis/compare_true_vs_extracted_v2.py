@@ -25,7 +25,7 @@ import torch
 BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work"
 sys.path.insert(0, os.path.join(BASE, "analysis"))
 
-from extraction_pipeline.architectures import TiniestModel, TinierModel, TinyModel  # noqa: E402
+from extraction_pipeline.architectures import TiniestModel, TinierModel, TinyModel, FullModel  # noqa: E402
 from extraction_pipeline.weight_assembly import load_unsigned_weights  # noqa: E402
 
 
@@ -39,6 +39,8 @@ ARCH_CONFIG = {
         'ext_basename':  'reconstructed_tiniest',
         'x_test2':       'data/x_test2_tiniest_makeblobs.npy',
         'y_test2':       'data/y_test2_tiniest_makeblobs.npy',
+        'x_test3':       'data/x_test3_tiniest_makeblobs.npy',
+        'y_test3':       'data/y_test3_tiniest_makeblobs.npy',
         'pretty':        'Tiniest 8-8-8-8-8-8',
     },
     'tinier': {
@@ -49,6 +51,8 @@ ARCH_CONFIG = {
         'ext_basename':  'reconstructed_tinier',
         'x_test2':       'data/x_test2_tinier_makeblobs.npy',
         'y_test2':       'data/y_test2_tinier_makeblobs.npy',
+        'x_test3':       'data/x_test3_tinier_makeblobs.npy',
+        'y_test3':       'data/y_test3_tinier_makeblobs.npy',
         'pretty':        'Tinier 32->16->16->16->8->4',
     },
     'tiny': {
@@ -59,7 +63,21 @@ ARCH_CONFIG = {
         'ext_basename':  'reconstructed_makeblobs',
         'x_test2':       'data/x_test2_makeblobs.npy',
         'y_test2':       'data/y_test2_makeblobs.npy',
+        'x_test3':       'data/x_test3_makeblobs.npy',
+        'y_test3':       'data/y_test3_makeblobs.npy',
         'pretty':        'Tiny 64-64-64-64-64-10',
+    },
+    'full': {
+        'model_class':   FullModel,
+        'layer_dims':    [(256, 3072), (256, 256), (256, 256), (64, 256)],
+        'fc5_shape':     (10, 64),
+        'true_basename': 'TinyModel_{act}',
+        'ext_basename':  'reconstructed_full',
+        'x_test2':       'data/x_test2_cifar.npy',
+        'y_test2':       'data/y_test2_cifar.npy',
+        'x_test3':       'data/x_test3_cifar.npy',
+        'y_test3':       'data/y_test3_cifar.npy',
+        'pretty':        'CIFAR-10 3072-256-256-256-64-10',
     },
 }
 
@@ -149,7 +167,7 @@ def fmt(x, prec=4):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--arch', choices=['tiniest', 'tinier', 'tiny'], required=True)
+    p.add_argument('--arch', choices=['tiniest', 'tinier', 'tiny', 'full'], required=True)
     p.add_argument('--activation', choices=['relu', 'leakyrelu'], required=True)
     p.add_argument('--output', required=True)
     p.add_argument('--ext-path', default=None, help='Override extracted .pth path')
@@ -239,14 +257,31 @@ def main():
         'b_l1_sum':    float(np.sum(np.abs(b_ext_fc5 - b_true_fc5))),
     }
 
-    # X_test2 functional accuracy
-    X2 = torch.tensor(np.load(x_test2_path), dtype=torch.float64)
-    Y2 = torch.tensor(np.load(y_test2_path), dtype=torch.long)
+    # Held-out functional accuracy. Prefer X_test3 (Fix-A honest-eval contract)
+    # when present; else fall back to X_test2 for legacy compatibility.
+    x_test3_path = os.path.join(BASE, cfg.get('x_test3', '')) if cfg.get('x_test3') else None
+    y_test3_path = os.path.join(BASE, cfg.get('y_test3', '')) if cfg.get('y_test3') else None
+
+    def _load_xe(p):
+        x = np.load(p)
+        # CIFAR raw uint8 (N,3072) → [-1,1] float64. Detect by dtype/shape.
+        if args.arch == 'full' and x.dtype == np.uint8:
+            x = x.reshape(-1, 3072).astype(np.float64) / 255.0 * 2 - 1
+        return torch.tensor(x, dtype=torch.float64)
+
+    if x_test3_path and os.path.exists(x_test3_path):
+        eval_tag = "X_test3"
+        Xe = _load_xe(x_test3_path)
+        Ye = torch.tensor(np.load(y_test3_path).squeeze(), dtype=torch.long)
+    else:
+        eval_tag = "X_test2"
+        Xe = _load_xe(x_test2_path)
+        Ye = torch.tensor(np.load(y_test2_path).squeeze(), dtype=torch.long)
     with torch.no_grad():
-        oracle_preds = true_m(X2).argmax(dim=1)
-        ext_preds    = ext_m(X2).argmax(dim=1)
-        oracle_acc = (oracle_preds == Y2).float().mean().item()
-        ext_acc    = (ext_preds    == Y2).float().mean().item()
+        oracle_preds = true_m(Xe).argmax(dim=1)
+        ext_preds    = ext_m(Xe).argmax(dim=1)
+        oracle_acc = (oracle_preds == Ye).float().mean().item()
+        ext_acc    = (ext_preds    == Ye).float().mean().item()
         agreement  = (ext_preds == oracle_preds).float().mean().item()
 
     # Pull metrics from extraction_metrics.json if available
@@ -268,7 +303,7 @@ def main():
     lines.append(f"**Architecture:** {cfg['pretty']}")
     lines.append(f"**Extracted model:** `{ext_path}`")
     lines.append(f"**True model:** `{true_path}`")
-    lines.append(f"**Functional accuracy on X_test2:** {ext_acc*100:.2f}% (oracle {oracle_acc*100:.2f}%, agreement {agreement*100:.2f}%)")
+    lines.append(f"**Functional accuracy on {eval_tag}:** {ext_acc*100:.2f}% (oracle {oracle_acc*100:.2f}%, agreement {agreement*100:.2f}%)")
     lines.append("")
 
     # Per-layer summary
@@ -337,9 +372,9 @@ def main():
     lines.append(f"| Signature direction (\\|cos\\|, recovered) | {fmt(overall_abscos)} |")
     lines.append(f"| Signature sign accuracy (recovered) | {fmt(overall_sign)} |")
     lines.append(f"| Mean rel err on recovered weights | {fmt(overall_relerr)} |")
-    lines.append(f"| Reconstructed acc on X_test2 | {ext_acc*100:.2f}% |")
-    lines.append(f"| Oracle acc on X_test2 | {oracle_acc*100:.2f}% |")
-    lines.append(f"| Prediction agreement on X_test2 | {agreement*100:.2f}% |")
+    lines.append(f"| Reconstructed acc on {eval_tag} | {ext_acc*100:.2f}% |")
+    lines.append(f"| Oracle acc on {eval_tag} | {oracle_acc*100:.2f}% |")
+    lines.append(f"| Prediction agreement on {eval_tag} | {agreement*100:.2f}% |")
     lines.append(f"| Phase-1 recovery rate | {layer_total_recovered}/{layer_total_neurons} ({100*layer_total_recovered/max(layer_total_neurons,1):.1f}%) |")
     lines.append("")
 
@@ -383,8 +418,11 @@ def main():
     summary_json = {
         'arch': args.arch, 'activation': args.activation,
         'extracted_path': ext_path, 'true_path': true_path,
+        'eval_tag': eval_tag,
         'oracle_acc_x_test2': oracle_acc, 'reconstructed_acc_x_test2': ext_acc,
         'prediction_agreement_x_test2': agreement,
+        'oracle_acc_eval': oracle_acc, 'reconstructed_acc_eval': ext_acc,
+        'prediction_agreement_eval': agreement,
         'per_layer': per_layer, 'fc5_summary': fc5_summary,
         'overall_abscos': overall_abscos, 'overall_sign_acc': overall_sign,
         'overall_rel_err': overall_relerr,

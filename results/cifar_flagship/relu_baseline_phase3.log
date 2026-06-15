@@ -1,0 +1,142 @@
+/home/biprarshi/miniconda3/envs/MLenv/lib/python3.11/site-packages/sklearn/linear_model/_logistic.py:1272: FutureWarning: 'multi_class' was deprecated in version 1.5 and will be removed in 1.7. From then on, it will always use 'multinomial'. Leave it to its default value to avoid this warning.
+  warnings.warn(
+======================================================================
+MODEL EXTRACTION VERIFICATION (v2 - Three-Tier Metrics)
+======================================================================
+
+Model type: Full (3072x256, CIFAR-10)
+Architecture: [(256, 3072), (256, 256), (256, 256), (64, 256)]
+Ground truth model: /run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/tiny_stuff/TinyModel_relu.pth
+Signature weights path: /tmp/empty_sig
+Sign recovery path: /run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/results/sign_recovery
+
+======================================================================
+LOADING TEST DATA
+======================================================================
+X_test (Phase-3 training) shape: torch.Size([10000, 3072])
+X_test2 (eval-only, seed=99) shape: torch.Size([10000, 3072])
+
+======================================================================
+GROUND TRUTH MODEL
+======================================================================
+Ground Truth (on X_test2) Accuracy: 0.5334 (5334/10000)
+
+======================================================================
+RECONSTRUCTING MODEL FROM EXTRACTION
+======================================================================
+
+NOTE: Unrecovered neurons use Kaiming/He initialization
+      Scaling uses abs(factor) to ensure sign is NOT revealed
+
+
+--- Layer 0 (256 neurons, 3072 inputs) ---
+  Warning: Layer directory not found: /tmp/empty_sig/layer_0
+  Warning: No signs found for layer 1, using +1 for all
+  [All neurons (incl. random init)]
+    SIGN accuracy:      0.5273
+    COMBINED rel err:   1.0781
+
+--- Layer 1 (256 neurons, 256 inputs) ---
+  Warning: Layer directory not found: /tmp/empty_sig/layer_1
+  Warning: No signs found for layer 2, using +1 for all
+  [All neurons (incl. random init)]
+    SIGN accuracy:      0.4805
+    COMBINED rel err:   4.0714
+
+--- Layer 2 (256 neurons, 256 inputs) ---
+  Warning: Layer directory not found: /tmp/empty_sig/layer_2
+  Warning: No signs found for layer 3, using +1 for all
+  [All neurons (incl. random init)]
+    SIGN accuracy:      0.5234
+    COMBINED rel err:   4.7313
+
+--- Layer 3 (64 neurons, 256 inputs) ---
+  Warning: Layer directory not found: /tmp/empty_sig/layer_3
+  Warning: No signs found for layer 4, using +1 for all
+  [All neurons (incl. random init)]
+    SIGN accuracy:      0.3750
+    COMBINED rel err:   447009.8019
+
+--- Output Layer ---
+  Kaiming init (will be LR-fit from oracle labels)
+
+--- Recovery Summary ---
+  Total neurons: 832
+  Recovered: 0 (0.0%)
+  Random init: 832 (100.0%)
+
+======================================================================
+BIAS RECOVERY FROM DUAL POINTS (bottom-up)
+======================================================================
+  [bias-recov] Layer 0: set 0/0 biases from dual points
+  [bias-recov] Layer 1: set 0/0 biases from dual points
+  [bias-recov] Layer 2: set 0/0 biases from dual points
+  [bias-recov] Layer 3: set 0/0 biases from dual points
+Pre-sign-search (X_test2) Accuracy: 0.0850 (850/10000)
+
+======================================================================
+ORACLE-QUERIES-ONLY SIGN SEARCH
+======================================================================
+Brute-forcing 2^k sign combos per layer using only hard-label oracle queries on X_test
+  [sign-search] starting oracle agreement: 0.0917
+  [sign-search] pass 1/3 order=[3, 2, 1, 0]
+  [sign-search] pass 1 agreement: 0.0917
+  [sign-search] pass 2/3 order=[0, 1, 2, 3]
+  [sign-search] pass 2 agreement: 0.0917
+  [sign-search] converged (no improvement), stopping early
+
+======================================================================
+OUTPUT LAYER (fc5) RECOVERY via LR on oracle labels
+======================================================================
+  [fc5-recov] LR fit on 10000 samples (10000 original + augmented), 10 classes seen; LR train acc vs oracle = 0.3191; reconstructed vs oracle on original X_test = 0.3191
+
+======================================================================
+ORACLE-LABEL REFINEMENT
+======================================================================
+  [refine] start agreement=0.3191, frozen recovered weights, n_epochs=1000, lr=0.005
+  [refine] epoch 1/1000  loss=1.9125  agreement=0.2483
+  [refine] epoch 100/1000  loss=1.3803  agreement=0.4976
+  [refine] epoch 200/1000  loss=0.9048  agreement=0.7159
+  [refine] epoch 300/1000  loss=0.3287  agreement=0.9128
+  [refine] epoch 400/1000  loss=0.1369  agreement=0.9733
+  [refine] epoch 500/1000  loss=0.0274  agreement=0.9964
+  [refine] epoch 600/1000  loss=0.0105  agreement=0.9988
+  [refine] epoch 700/1000  loss=0.0055  agreement=0.9994
+  [refine] epoch 800/1000  loss=0.0034  agreement=0.9996
+  [refine] epoch 900/1000  loss=0.0022  agreement=0.9998
+  [refine] epoch 1000/1000  loss=0.0015  agreement=0.9998
+
+--- Post-sign-search per-layer metrics ---
+
+======================================================================
+RECONSTRUCTED MODEL EVALUATION (on X_test2 — fresh eval set, seed=99)
+======================================================================
+Reconstructed (X_test2) Accuracy: 0.3843 (3843/10000)
+
+--- Prediction Comparison (X_test2) ---
+Prediction agreement (X_test2): 0.4432
+
+======================================================================
+EXTRACTION SUMMARY (Three-Tier Metrics)
+======================================================================
+
+--- Per-Layer Metrics (Recovered Neurons Only) ---
+
+--- Model Performance ---
+Ground truth accuracy: 0.5334
+Reconstructed accuracy: 0.3843
+Accuracy difference: 0.1491
+Prediction agreement: 0.4432
+
+*** EXTRACTION NEEDS IMPROVEMENT ***
+
+======================================================================
+SAVING RECONSTRUCTED MODEL
+======================================================================
+Saved PyTorch model to: /run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/results/reconstructed_models/reconstructed_full.pth
+Saved weights to: /run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/results/reconstructed_models/reconstructed_full_weights.npz
+Saved metrics to: /run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/results/reconstructed_models/extraction_metrics.json
+
+======================================================================
+VERIFICATION COMPLETE
+======================================================================

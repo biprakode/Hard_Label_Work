@@ -6,9 +6,10 @@ from pathlib import Path
 import sign_recovery
 
 # ========== Global Settings ========== #
-MAKEBLOBS                = True  # Use make_blobs synthetic dataset instead of CIFAR-10
+MAKEBLOBS = False  # Use make_blobs synthetic dataset instead of CIFAR-10
 TINIEST = False  # Use tiniest 8-8-8-8-8-8 model
 TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
+FULL = True  # Full flagship CIFAR-10 (3072->256->256->256->64->10)
 
 # Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
 #   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved)
@@ -31,6 +32,10 @@ elif MAKEBLOBS:
     model_name           = "makeblobs_4x64_10_float64"
     model_path           = f"{_TINY_STUFF}/makeblobs_{_act_suffix}.keras"
     LAYER_NEURON_COUNTS  = {1: 64, 2: 64, 3: 64, 4: 64}
+elif FULL:
+    model_name           = "cifar10_3x256_64_10_float64"
+    model_path           = f"{_TINY_STUFF}/TinyModel_{_act_suffix}.keras"
+    LAYER_NEURON_COUNTS  = {1: 256, 2: 256, 3: 256, 4: 64}
 else:
     model_name           = "cifar10_4x64_10_float64"
     model_path           = f"{_TINY_STUFF}/TinyModel_{_act_suffix}.keras"
@@ -42,7 +47,7 @@ LAYERIDS                 = (1, 2, 3, 4)  # layer IDs to analyze
 analyzeWiggleSensitivity = 'True'  # Record the sensitivity to the wiggle at the target layer
 analyzeSpeed             = 'True'  # Record the rate of change of future layer neurons
 nDebug                   = 'True'  # Set to True to skip logfile
-nThreads                 = 2  # Reduced from 8 to avoid OOM on 24GB machines (was 8)
+nThreads                 = 5  # Reduced from 8 to avoid OOM on 24GB machines (was 8)
 # ==================================== #
 
 

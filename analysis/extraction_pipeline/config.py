@@ -43,12 +43,23 @@ TINY_MODEL_KERAS    = os.path.join(BASE_DIR, f"tiny_stuff/TinyModel_{_act_suffix
 MAKEBLOBS_MODEL_PTH = os.path.join(BASE_DIR, f"tiny_stuff/makeblobs_{_act_suffix}.pth")
 TINIER_MODEL_PTH    = os.path.join(BASE_DIR, f"tiny_stuff/tinier_makeblobs_{_act_suffix}.pth")
 TINIEST_MODEL_PTH   = os.path.join(BASE_DIR, f"tiny_stuff/tiniest_makeblobs_{_act_suffix}.pth")
-FULL_MODEL_PTH      = os.path.join(BASE_DIR, "signature_recovery/models/converted_model.pth")
+# Flagship CIFAR victim: same file utils.MODEL_PATH resolves to (suffix-keyed).
+FULL_MODEL_PTH      = os.path.join(BASE_DIR, f"tiny_stuff/TinyModel_{_act_suffix}.pth")
 
 
 # --------------------------------------------------------------- test data paths --
 # X_test: used for Phase-3 oracle training (sign search, fc5 LR, refinement)
 X_TEST_PATH                = os.path.join(BASE_DIR, "data/x_test.npy")
+Y_TEST_PATH                = os.path.join(BASE_DIR, "data/y_test.npy")        # CIFAR test labels
+# CIFAR fresh eval-only set (held-out train slice; no Phase-3 training overlap)
+X_TEST2_CIFAR_PATH         = os.path.join(BASE_DIR, "data/x_test2_cifar.npy")
+Y_TEST2_CIFAR_PATH         = os.path.join(BASE_DIR, "data/y_test2_cifar.npy")
+# X_test3: second disjoint CIFAR train slice (10000-19999). When the enhanced
+# Phase 3 pipeline promotes X_test2 into the query/training tier, X_test3 is
+# the held-out eval set + early-stop watchdog (so the headline metric is
+# computed on data that was NEVER queried or used to early-stop, only scored).
+X_TEST3_CIFAR_PATH         = os.path.join(BASE_DIR, "data/x_test3_cifar.npy")
+Y_TEST3_CIFAR_PATH         = os.path.join(BASE_DIR, "data/y_test3_cifar.npy")
 X_TEST_MAKEBLOBS_PATH      = os.path.join(BASE_DIR, "data/x_test_makeblobs.npy")
 Y_TEST_MAKEBLOBS_PATH      = os.path.join(BASE_DIR, "data/y_test_makeblobs.npy")
 X_TEST_TINIER_PATH         = os.path.join(BASE_DIR, "data/x_test_tinier_makeblobs.npy")
@@ -59,8 +70,21 @@ Y_TEST_TINIEST_PATH        = os.path.join(BASE_DIR, "data/y_test_tiniest_makeblo
 # X_test2: fresh eval-only set (seed=99, same scaler) — no Phase-3 training overlap
 X_TEST2_TINIEST_PATH       = os.path.join(BASE_DIR, "data/x_test2_tiniest_makeblobs.npy")
 Y_TEST2_TINIEST_PATH       = os.path.join(BASE_DIR, "data/y_test2_tiniest_makeblobs.npy")
+X_TEST2_TINIER_PATH        = os.path.join(BASE_DIR, "data/x_test2_tinier_makeblobs.npy")
+Y_TEST2_TINIER_PATH        = os.path.join(BASE_DIR, "data/y_test2_tinier_makeblobs.npy")
 X_TEST2_MAKEBLOBS_PATH     = os.path.join(BASE_DIR, "data/x_test2_makeblobs.npy")
 Y_TEST2_MAKEBLOBS_PATH     = os.path.join(BASE_DIR, "data/y_test2_makeblobs.npy")
+
+# X_test3: third disjoint draw (seed=123 for make_blobs, CIFAR train slice
+# 10000-19999 for the flagship). Held-out eval + early-stop watchdog. Never
+# queried, never used for fc5 LR or sign-flip decisions other than
+# restart-selection (see sign_search).
+X_TEST3_MAKEBLOBS_PATH     = os.path.join(BASE_DIR, "data/x_test3_makeblobs.npy")
+Y_TEST3_MAKEBLOBS_PATH     = os.path.join(BASE_DIR, "data/y_test3_makeblobs.npy")
+X_TEST3_TINIER_PATH        = os.path.join(BASE_DIR, "data/x_test3_tinier_makeblobs.npy")
+Y_TEST3_TINIER_PATH        = os.path.join(BASE_DIR, "data/y_test3_tinier_makeblobs.npy")
+X_TEST3_TINIEST_PATH       = os.path.join(BASE_DIR, "data/x_test3_tiniest_makeblobs.npy")
+Y_TEST3_TINIEST_PATH       = os.path.join(BASE_DIR, "data/y_test3_tiniest_makeblobs.npy")
 
 
 # --------------------------------------------------------------- aux paths --

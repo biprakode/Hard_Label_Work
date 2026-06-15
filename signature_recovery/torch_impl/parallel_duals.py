@@ -54,6 +54,29 @@ def _torch_round(args):
     return round_id, len(triplets), out
 
 
+def _blackbox_round(args):
+    """One round of the BLACK-BOX finder (cheat_remove/bb_find_duals) -> one pickle.
+    Victim accessed only via argmax hard labels. Runs in a worker."""
+    round_id, target, batch_size, exp_dir = args
+    sys.argv = sys.argv[:1]   # utils.py reads sys.argv[1] as SEED at import
+    import numpy as np
+    _root = os.path.dirname(_SIGREC)
+    cr = os.path.join(_root, "cheat_remove")
+    if cr not in sys.path:
+        sys.path.insert(0, cr)
+    import bb_core, bb_find_duals
+    np.random.seed(None)
+    o = bb_core.Oracle()
+    triplets = bb_find_duals.find_batch(o, target=target, batch_size=batch_size, verbose=False)
+    os.makedirs(exp_dir, exist_ok=True)
+    import random
+    random.seed(None)
+    out = os.path.join(exp_dir, "duals_%08d.p" % random.randint(0, 1000000))
+    with open(out, "wb") as f:
+        pickle.dump(triplets, f)
+    return round_id, len(triplets), out
+
+
 def _subprocess_round(args):
     """One round of the ORIGINAL find_duals.py as a subprocess (pure baseline)."""
     round_id, py, sigrec = args
@@ -71,7 +94,7 @@ def main():
     ap.add_argument("--batch-size", type=int, default=256, help="walks per batch (torch impl)")
     ap.add_argument("--target", type=int, default=None,
                     help="triplets per round (default: find_duals_torch.TARGET for the arch)")
-    ap.add_argument("--impl", choices=["torch", "subprocess"], default="torch")
+    ap.add_argument("--impl", choices=["torch", "subprocess", "blackbox"], default="torch")
     ap.add_argument("--output-dir", default=None,
                     help="exp dir (default: signature_recovery/exp/{SEED})")
     ap.add_argument("--python-bin", default=sys.executable)
@@ -91,6 +114,16 @@ def main():
         worker = _torch_round
         print(f"[parallel_duals] impl=torch workers={args.workers} iters={args.iterations} "
               f"batch={args.batch_size} target/round={target} -> {exp_dir}", flush=True)
+    elif args.impl == "blackbox":
+        _root = os.path.dirname(_SIGREC)
+        sys.path.insert(0, os.path.join(_root, "cheat_remove"))
+        import bb_find_duals
+        target = args.target or bb_find_duals.TARGET
+        bs = args.batch_size if args.batch_size != 256 else 48   # blackbox default 48
+        tasks = [(i, target, bs, exp_dir) for i in range(args.iterations)]
+        worker = _blackbox_round
+        print(f"[parallel_duals] impl=blackbox (argmax-only) workers={args.workers} "
+              f"iters={args.iterations} batch={bs} target/round={target} -> {exp_dir}", flush=True)
     else:
         tasks = [(i, args.python_bin, _SIGREC) for i in range(args.iterations)]
         worker = _subprocess_round

@@ -1,5 +1,6 @@
 import re
 import os
+import gc
 import pickle
 from utils import *
 from collections import defaultdict
@@ -200,11 +201,15 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
     centered_samples = samples - mean_point
 
     if do_return_soln:
-        U, S, Vt = np.linalg.svd(centered_samples)
+        # full_matrices=False: avoids allocating the (n,n) U (n can be ~15k rows
+        # -> ~1.9GB) which OOM-killed the 22GB box. samples always has n >> d, so
+        # Vt has shape (d,d) either way and Vt[-1] (smallest right singular vector
+        # = recovered weight direction) is identical to the full-SVD result.
+        U, S, Vt = np.linalg.svd(centered_samples, full_matrices=False)
+        del U
 
         ans = Vt[-1]
         ans = norm(ans)
-        
 
         return S, Vt[-1]
 
@@ -269,7 +274,17 @@ def dosteal(LAYER, cluster):
                 return False
         return True
 
-    for cluster_id, maybe in sorted(cluster.items(), key=lambda x: len(x[1])):
+    # Optional cluster-range slicing (CLUSTER_START/CLUSTER_END) so a layer can
+    # be recovered in chunks across separate processes — bounds peak RAM on a
+    # small box (each process exits and frees everything). gc.collect() per
+    # cluster reclaims autograd/cyclic garbage that otherwise grows unbounded
+    # over hundreds of clusters and OOM-killed the 22GB box.
+    ordered = sorted(cluster.items(), key=lambda x: len(x[1]))
+    _start = int(os.environ.get("CLUSTER_START", "0"))
+    _end = int(os.environ.get("CLUSTER_END", str(len(ordered))))
+    ordered = ordered[_start:_end]
+    print(f"[dosteal] layer {LAYER}: processing clusters [{_start}:{_end}] = {len(ordered)} of total")
+    for cluster_id, maybe in ordered:
         clean = [t for t in maybe if _consistent(t)]
         dropped = len(maybe) - len(clean)
         if dropped:
@@ -345,7 +360,13 @@ def dosteal(LAYER, cluster):
             else:
                 print("Not enough to fully extract")
                 file.write("Not enough to fully extract")
-            
+
+        # Reclaim per-cluster garbage (autograd graphs / cyclic refs) so RAM
+        # stays flat over hundreds of clusters instead of OOM-killing the box.
+        file.flush()
+        del maybe, clean
+        gc.collect()
+
 if __name__ == '__main__':
     layer = int(sys.argv[1])
     dosteal(layer, pickle.load(open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster-%d.p"%layer,"rb")))

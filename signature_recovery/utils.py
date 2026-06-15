@@ -18,9 +18,10 @@ USE_GRADIENT = True
 
 LAYERS = 5
 TINIEST = False  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
-TINY = True
+TINY = False
 TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
-MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
+MAKEBLOBS = False  # Use make_blobs synthetic dataset instead of CIFAR-10
+# => full flagship CIFAR-10: LAYER_SIZES = [3072, 256, 256, 256, 64, 10]
 
 # Activation toggle.
 #   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, identical to the original pipeline)
@@ -94,12 +95,21 @@ elif MAKEBLOBS:
     x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test_makeblobs.npy")
     x_test = np.array(x_test, dtype=np.float64)
 else:
-    # Load CIFAR-10 data with preprocessing
+    # Load CIFAR-10 data with preprocessing.
+    # data/x_test.npy is stored RAW uint8 (N,3072); the victim input space is
+    # x/255*2-1 -> [-1,1].  This MUST match analysis/extraction_pipeline/
+    # data_loading.py (which also does /255*2-1) so the dual-search seeds and the
+    # Phase-3 oracle agree on the input distribution.
     x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test.npy")
     if TINY:
+        # 64-dim CIFAR-tiny path: greyscale-average + 4x4 subsample (expects (N,3,32,32))
         x_test = x_test.mean(1)[:, ::4, ::4]
-    x_test = x_test.reshape((-1, IDIM))
-    x_test = (x_test*2-1)
+        x_test = x_test.reshape((-1, IDIM))
+        x_test = (x_test*2-1)
+    else:
+        # full flagship: raw uint8 (N,3072) -> [-1,1]
+        x_test = x_test.reshape((-1, IDIM))
+        x_test = x_test/255.0*2 - 1
     x_test = np.array(x_test, dtype=np.float64)
 
 random.seed(SEED)

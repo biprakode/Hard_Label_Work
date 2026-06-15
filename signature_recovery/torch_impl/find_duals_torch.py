@@ -48,6 +48,11 @@ if _SIGREC not in sys.path:
 import utils
 from utils import IDIM, LEAKY_ALPHA, cheat_net_cuda, bmodel, gapt, TINIEST, TINIER
 
+# CIFAR (flagship) seeds boundary searches from REAL test images, mirroring the
+# original find_decision_boundary()'s non-tiny branch; tiny/make_blobs seed from
+# N(0,1). _CIFAR_SEED is True exactly when the original would sample x_test.
+_CIFAR_SEED = not (utils.TINY or utils.TINIER or utils.TINIEST)
+
 # Target triplets per saved pickle, matching find_duals.main()'s TARGET.
 TARGET = 3000 if TINIEST else (2000 if TINIER else 10000)
 
@@ -113,14 +118,23 @@ def _bisect_batch(zero, one, max_iters=200):
     return zero
 
 
+def _sample_seed_points(n):
+    """Draw n seed points. CIFAR flagship: random REAL test images (matching
+    find_decision_boundary()'s non-tiny branch). Tiny/make_blobs: N(0,1)."""
+    if _CIFAR_SEED:
+        idx = np.random.randint(0, len(utils.x_test), size=n)
+        return utils.x_test[idx].astype(np.float64).copy()
+    return np.random.normal(size=(n, IDIM))
+
+
 def _init_boundaries(B):
-    """Initialise B boundary points: sample random pairs with differing labels
-    (normal distribution, matching find_decision_boundary()'s non-CIFAR branch),
-    then bisect. Returns (boundary tensor (B', IDIM), B') where B' <= B is the
-    number of lanes that found a differing-label pair.
+    """Initialise B boundary points: sample random pairs with differing labels,
+    then bisect. CIFAR seeds from real images; tiny from N(0,1) — both mirror the
+    original find_decision_boundary(). Returns (boundary (B', IDIM), B') where
+    B' <= B is the number of lanes that found a differing-label pair.
     """
-    pts_a = np.random.normal(size=(B, IDIM))
-    pts_b = np.random.normal(size=(B, IDIM))
+    pts_a = _sample_seed_points(B)
+    pts_b = _sample_seed_points(B)
     ta = torch.from_numpy(pts_a)
     tb = torch.from_numpy(pts_b)
     la = _bmodel(ta).numpy()
@@ -129,7 +143,7 @@ def _init_boundaries(B):
         same = (la == lb)
         if not same.any():
             break
-        pts_b[same] = np.random.normal(size=(int(same.sum()), IDIM))
+        pts_b[same] = _sample_seed_points(int(same.sum()))
         tb = torch.from_numpy(pts_b)
         lb = _bmodel(tb).numpy()
     ok = la != lb

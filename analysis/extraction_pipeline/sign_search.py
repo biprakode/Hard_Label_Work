@@ -9,8 +9,17 @@ Both use *only* hard-label oracle queries on X_test, so this remains a
 black-box attack. When duals_dir is provided, biases are kept consistent
 with weight signs via b_i = -w_i · h_{L-1}(x_d).median(), so flipping w_i
 also flips b_i (joint w+b search).
+
+Fix C additions (all default-off):
+    * `greedy_oracle_sign_search_with_restarts` — N+1 traversals (current +
+      N random sign vectors); pick by held-out X_eval agreement. Escapes the
+      single-flip local optimum greedy gets stuck in.
+    * `pair_flip_lookahead` — after greedy converges on a layer, try all
+      C(K,2) pair-flips on the top-K most-uncertain neurons. Catches the
+      "two-wrong-signs-cancel" case greedy can't see.
 """
 
+import copy
 import os
 import numpy as np
 import torch
@@ -307,3 +316,228 @@ def _greedy_sign_pass_layer(reconstructed_model, layers, lid, recovered_masks,
                 layer.bias.data[neuron_idx] = orig_b
 
     return n_flipped
+
+
+# --------------------------------------------------- Fix C internals (helpers) --
+
+def _reproject_bias_for_neuron(reconstructed_model, layer, neuron_idx, lid, duals_dir):
+    """When duals_dir is provided, re-project the bias from the (new) weight row.
+    No-op if the dual file is missing or empty. Caller must hold no_grad."""
+    if duals_dir is None:
+        return
+    dpath = os.path.join(duals_dir, f"layer{lid+1}_neuron{neuron_idx}.npy")
+    if not os.path.exists(dpath):
+        return
+    duals = np.load(dpath)
+    if len(duals) == 0:
+        return
+    x_d = torch.tensor(duals[:30], dtype=torch.float64)
+    h = _hidden_activations_up_to(reconstructed_model, x_d, lid)
+    layer.bias.data[neuron_idx] = -(h @ layer.weight.data[neuron_idx]).median()
+
+
+def _randomize_signs(reconstructed_model, layers, recovered_masks, duals_dir, rng):
+    """Independently flip each recovered row with probability 0.5 (in-place).
+    Bias is re-projected when duals_dir is provided so w+b stays consistent."""
+    with torch.no_grad():
+        for lid, layer in enumerate(layers):
+            mask = recovered_masks.get(lid)
+            if mask is None:
+                continue
+            recovered_idx = np.where(mask)[0]
+            for nidx_t in recovered_idx:
+                nidx = int(nidx_t)
+                if rng.random() < 0.5:
+                    layer.weight.data[nidx] = -layer.weight.data[nidx]
+                    _reproject_bias_for_neuron(reconstructed_model, layer, nidx, lid, duals_dir)
+
+
+def _agreement_on(model, X, oracle_labels):
+    with torch.no_grad():
+        return (model(X).argmax(dim=1) == oracle_labels).float().mean().item()
+
+
+# ---------------------------------------------------- Fix C2: random restarts --
+
+def greedy_oracle_sign_search_with_restarts(
+    reconstructed_model, oracle_model, X_train, recovered_masks,
+    X_eval=None, layer_ids=(0, 1, 2, 3), n_passes=5,
+    n_restarts=4, eval_sample=1024, verbose=True, duals_dir=None, seed=0,
+):
+    """Run greedy_oracle_sign_search `n_restarts + 1` times:
+        * traversal 0  starts from current sign vector
+        * traversals 1..N start from random sign vectors (each recovered row
+          flipped i.i.d. ±1 with p=0.5)
+    Pick the traversal whose held-out X_eval agreement is highest; restore
+    that model state.
+
+    X_eval is OPTIONAL — if None, fall back to scoring by X_train agreement
+    (same as plain greedy_oracle_sign_search, but with restarts). The plan
+    recommends X_eval = X_test3[:eval_sample] for honest restart selection.
+    """
+    layers = [reconstructed_model.fc1, reconstructed_model.fc2,
+              reconstructed_model.fc3, reconstructed_model.fc4]
+
+    oracle_model.eval()
+    with torch.no_grad():
+        oracle_labels_train = oracle_model(X_train).argmax(dim=1)
+        if X_eval is not None:
+            X_eval_use = X_eval[:eval_sample]
+            oracle_labels_eval = oracle_model(X_eval_use).argmax(dim=1)
+        else:
+            X_eval_use, oracle_labels_eval = X_train, oracle_labels_train
+
+    rng = np.random.RandomState(seed)
+    start_state = copy.deepcopy(reconstructed_model.state_dict())
+    best_state = start_state
+    best_score = _agreement_on(reconstructed_model, X_eval_use, oracle_labels_eval)
+    best_traversal_train = _agreement_on(reconstructed_model, X_train, oracle_labels_train)
+    if verbose:
+        tag = "X_eval" if X_eval is not None else "X_train"
+        print(f"  [restarts] baseline state held-out {tag} agreement={best_score:.4f}, "
+              f"X_train agreement={best_traversal_train:.4f}")
+
+    per_restart = []
+    for r in range(n_restarts + 1):
+        # Reset to baseline state for traversals 0 and 1..N alike.
+        reconstructed_model.load_state_dict(copy.deepcopy(start_state))
+        if r > 0:
+            _randomize_signs(reconstructed_model, layers, recovered_masks, duals_dir, rng)
+            init_train = _agreement_on(reconstructed_model, X_train, oracle_labels_train)
+            if verbose:
+                print(f"  [restarts] restart {r}/{n_restarts}: random init "
+                      f"agreement={init_train:.4f} → running greedy ...")
+        else:
+            if verbose:
+                print(f"  [restarts] traversal {r}/{n_restarts}: from current state → running greedy ...")
+        traversal_result = greedy_oracle_sign_search(
+            reconstructed_model, oracle_model, X_train, recovered_masks,
+            layer_ids=layer_ids, n_passes=n_passes, verbose=False,
+            duals_dir=duals_dir,
+        )
+        train_agree = traversal_result['final_agreement']
+        eval_agree = _agreement_on(reconstructed_model, X_eval_use, oracle_labels_eval)
+        per_restart.append({
+            'restart': r,
+            'train_agreement': float(train_agree),
+            'eval_agreement': float(eval_agree),
+        })
+        if verbose:
+            print(f"  [restarts] traversal {r} train={train_agree:.4f} eval={eval_agree:.4f}")
+        if eval_agree > best_score + 1e-6:
+            best_score = eval_agree
+            best_state = copy.deepcopy(reconstructed_model.state_dict())
+            best_traversal_train = train_agree
+
+    reconstructed_model.load_state_dict(best_state)
+    final_train = _agreement_on(reconstructed_model, X_train, oracle_labels_train)
+    final_eval = _agreement_on(reconstructed_model, X_eval_use, oracle_labels_eval)
+    if verbose:
+        print(f"  [restarts] selected restart with eval_agreement={best_score:.4f} "
+              f"(after restore: train={final_train:.4f} eval={final_eval:.4f})")
+    return {
+        'n_restarts': int(n_restarts),
+        'used_X_eval': bool(X_eval is not None),
+        'per_restart': per_restart,
+        'final_agreement': float(final_train),
+        'final_eval_agreement': float(final_eval),
+    }
+
+
+# -------------------------------------------- Fix C3: pair-flip lookahead -----
+
+def pair_flip_lookahead(
+    reconstructed_model, oracle_model, X_train, recovered_masks,
+    K=8, layer_ids=(0, 1, 2, 3), verbose=True, duals_dir=None,
+):
+    """For each layer:
+        1. Re-score each recovered neuron's |flip_agree - baseline_agree|.
+        2. Pick the K with smallest absolute change (most uncertain).
+        3. For every pair (i, j) in those K, simultaneously flip both. Keep
+           the joint flip iff agreement strictly improves over the current
+           best (greedy local-optimum escape via pair coupling).
+
+    This is a single pass per layer — small enough (C(K,2) forward passes per
+    layer; K=8 → 28 passes/layer) that it's cheap enough to interleave with
+    sign-search cycles.
+    """
+    layers = [reconstructed_model.fc1, reconstructed_model.fc2,
+              reconstructed_model.fc3, reconstructed_model.fc4]
+
+    oracle_model.eval()
+    with torch.no_grad():
+        oracle_labels = oracle_model(X_train).argmax(dim=1)
+
+    results = {}
+    for lid in layer_ids:
+        layer = layers[lid]
+        mask = recovered_masks.get(lid)
+        if mask is None:
+            results[lid] = {'skipped': 'no_mask'}
+            continue
+        recovered_idx = np.where(mask)[0]
+        if len(recovered_idx) < 2:
+            results[lid] = {'skipped': 'fewer_than_2_recovered', 'recovered': int(len(recovered_idx))}
+            continue
+
+        # 1. Score uncertainty per neuron.
+        with torch.no_grad():
+            baseline_agree = _agreement_on(reconstructed_model, X_train, oracle_labels)
+            deltas = []
+            for nidx_t in recovered_idx:
+                nidx = int(nidx_t)
+                orig_w = layer.weight.data[nidx].clone()
+                orig_b = layer.bias.data[nidx].clone()
+                layer.weight.data[nidx] = -orig_w
+                if duals_dir is not None:
+                    _reproject_bias_for_neuron(reconstructed_model, layer, nidx, lid, duals_dir)
+                flip_agree = _agreement_on(reconstructed_model, X_train, oracle_labels)
+                deltas.append((nidx, abs(flip_agree - baseline_agree)))
+                layer.weight.data[nidx] = orig_w
+                layer.bias.data[nidx] = orig_b
+
+        # 2. Top-K most-uncertain (smallest |Δ|).
+        deltas.sort(key=lambda x: x[1])
+        top_k = [d[0] for d in deltas[:max(2, K)]]
+
+        # 3. Pair-flip pass.
+        n_pair_flips = 0
+        cur_agree = baseline_agree
+        with torch.no_grad():
+            for i in range(len(top_k)):
+                for j in range(i + 1, len(top_k)):
+                    ni, nj = top_k[i], top_k[j]
+                    orig_wi = layer.weight.data[ni].clone()
+                    orig_bi = layer.bias.data[ni].clone()
+                    orig_wj = layer.weight.data[nj].clone()
+                    orig_bj = layer.bias.data[nj].clone()
+
+                    layer.weight.data[ni] = -orig_wi
+                    layer.weight.data[nj] = -orig_wj
+                    if duals_dir is not None:
+                        _reproject_bias_for_neuron(reconstructed_model, layer, ni, lid, duals_dir)
+                        _reproject_bias_for_neuron(reconstructed_model, layer, nj, lid, duals_dir)
+
+                    test_agree = _agreement_on(reconstructed_model, X_train, oracle_labels)
+                    if test_agree > cur_agree + 1e-7:
+                        cur_agree = test_agree
+                        n_pair_flips += 1
+                    else:
+                        layer.weight.data[ni] = orig_wi
+                        layer.bias.data[ni] = orig_bi
+                        layer.weight.data[nj] = orig_wj
+                        layer.bias.data[nj] = orig_bj
+
+        results[lid] = {
+            'recovered': int(len(recovered_idx)),
+            'K': int(len(top_k)),
+            'baseline_agreement': float(baseline_agree),
+            'final_agreement': float(cur_agree),
+            'pair_flips_accepted': int(n_pair_flips),
+        }
+        if verbose:
+            print(f"  [pair-flip] layer {lid}: K={len(top_k)} most-uncertain, "
+                  f"baseline={baseline_agree:.4f} → after pair pass={cur_agree:.4f} "
+                  f"({n_pair_flips} pair flips accepted)")
+
+    return results
