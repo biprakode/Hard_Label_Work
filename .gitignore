@@ -36,6 +36,13 @@ results/model_*/
 results/reconstructed_models_test_*/
 results/reconstructed_models_*_verify/
 
+# -------------------------------------- generated reports / logs / json --
+# Per-run markdown reports produced by the eval/extraction scripts
+results/reports/*.md
+# All run-time logs and JSON dumps anywhere in the tree
+*.log
+*.json
+
 # -------------------------------------- baseline / backup directories --
 _relu_baseline_backup/
 signature_output/

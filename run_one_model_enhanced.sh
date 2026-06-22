@@ -69,11 +69,16 @@ case "$ARCH" in
     full)    SIGN_RESTARTS=4; SIGN_PAIR=8;  SIGN_CYCLES=3; REFINE_EPOCHS=500 ;;
 esac
 
+# sign_search_improve: per-layer sign optimizer. greedy (default, legacy) | tabu | sa.
+# Override via env, e.g.  SIGN_METHOD=sa SIGN_OBJ=margin ./run_one_model_enhanced.sh tiny relu
+SIGN_METHOD="${SIGN_METHOD:-greedy}"
+SIGN_OBJ="${SIGN_OBJ:-agree}"
+
 echo ""                                      | tee -a "$LOG"
 echo "=================================================="          | tee -a "$LOG"
 echo "MODEL (enhanced): $TAG    ($(date -u))"                       | tee -a "$LOG"
 echo "  arch=$ARCH  activation=$ACT  DUAL_ITERS=$DUAL_ITERS"        | tee -a "$LOG"
-echo "  flags: restarts=$SIGN_RESTARTS pair=$SIGN_PAIR cycles=$SIGN_CYCLES refine=$REFINE_EPOCHS" | tee -a "$LOG"
+echo "  flags: restarts=$SIGN_RESTARTS pair=$SIGN_PAIR cycles=$SIGN_CYCLES refine=$REFINE_EPOCHS sign_method=$SIGN_METHOD/$SIGN_OBJ" | tee -a "$LOG"
 echo "==================================================" | tee -a "$LOG"
 
 t_total_start=$(date +%s)
@@ -213,6 +218,8 @@ esac
     --sign-restarts "$SIGN_RESTARTS" \
     --sign-pair-lookahead "$SIGN_PAIR" \
     --sign-refine-cycles "$SIGN_CYCLES" \
+    --sign-search-method "$SIGN_METHOD" \
+    --sign-search-objective "$SIGN_OBJ" \
     > "/tmp/${TAG}_phase3.log" 2>&1
 grep -E "recovered|accuracy|agreement|EXTRACTION|Saved|refine\]|cycle|fc5|pair|X_test3" "/tmp/${TAG}_phase3.log" | tail -40 | tee -a "$LOG"
 t7=$(( $(date +%s) - t7_start ))
@@ -232,6 +239,18 @@ cp "$HERE/results/reconstructed_models/extraction_metrics.json" \
     --output "$REPORTS_DIR/${TAG}_true_vs_extracted.md" \
     --metrics-json "$REPORTS_DIR/${TAG}_extraction_metrics.json" \
     --timings "$TIMINGS_JSON" 2>&1 | tee -a "$LOG"
+
+# ---------- STEP 9 — Improved evaluation scorecard (LATEST WORKFLOW) ----------
+# Mandatory two-arm extraction-vs-distillation scorecard (Metrics 1-5 + EQS).
+# Activation is auto-detected from the extraction metrics, and the distillation
+# baseline is auto-built if missing. Writes results/reports/eval_<arch>_<date>.md
+# (+ a copy and JSON under Evaluation_Metric_Improve/). Non-fatal on failure.
+echo "=== [9] improved evaluation scorecard (analysis/evaluate_extraction_quality.py) ===" | tee -a "$LOG"
+t9_start=$(date +%s)
+"$PY" analysis/evaluate_extraction_quality.py $ARCH_FLAG 2>&1 | tee -a "$LOG" \
+    || echo "  (improved evaluation failed — extraction run still OK)" | tee -a "$LOG"
+t9=$(( $(date +%s) - t9_start ))
+echo "  duration: ${t9}s" | tee -a "$LOG"
 
 t_total=$(( $(date +%s) - t_total_start ))
 echo "=== TOTAL wall time for $TAG: ${t_total}s ===" | tee -a "$LOG"

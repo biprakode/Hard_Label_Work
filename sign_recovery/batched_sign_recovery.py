@@ -14,7 +14,7 @@ FULL = True  # Full flagship CIFAR-10 (3072->256->256->256->64->10)
 # Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
 #   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved)
 #   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha) — selects *_leakyrelu.keras model
-LEAKY_ALPHA = 0.01
+LEAKY_ALPHA = 0.0
 sign_recovery.LEAKY_ALPHA = LEAKY_ALPHA  # propagate to sign_recovery activation forwards
 _act_suffix              = "leakyrelu" if LEAKY_ALPHA > 0 else "relu"
 _TINY_STUFF              = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/tiny_stuff"

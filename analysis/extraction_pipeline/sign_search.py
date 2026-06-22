@@ -20,9 +20,21 @@ Fix C additions (all default-off):
 """
 
 import copy
+import math
 import os
 import numpy as np
 import torch
+
+
+# Sign search optimises oracle agreement. Once agreement == 1.0 the objective is
+# flat (every input already matches the oracle), so no flip can improve it and
+# further search is wasted compute. This watchdog short-circuits the search the
+# moment agreement saturates.
+_AGREE_SAT = 1.0 - 1e-12
+
+
+def _saturated(agree):
+    return agree >= _AGREE_SAT
 
 from .bias_recovery import _hidden_activations_up_to
 
@@ -58,6 +70,15 @@ def oracle_sign_search(reconstructed_model, oracle_model, X_test, recovered_mask
     if verbose:
         print(f"  [sign-search] starting oracle agreement: {start_agree:.4f}")
 
+    # Watchdog: agreement already saturated → no flip can improve it, skip search.
+    if _saturated(start_agree):
+        if verbose:
+            print(f"  [sign-search] agreement already 1.0 — skipping (saturated)")
+        results['final_agreement'] = start_agree
+        results['starting_agreement'] = start_agree
+        results['saturated'] = True
+        return results
+
     for pass_i in range(n_passes):
         if order == 'top-down':
             this_order = list(reversed(layer_ids))
@@ -76,6 +97,11 @@ def oracle_sign_search(reconstructed_model, oracle_model, X_test, recovered_mask
         cur_agree = _current_agreement()
         if verbose:
             print(f"  [sign-search] pass {pass_i+1} agreement: {cur_agree:.4f}")
+        if _saturated(cur_agree):
+            if verbose:
+                print(f"  [sign-search] agreement hit 1.0 — stopping (saturated)")
+            results['saturated'] = True
+            break
         if cur_agree <= prev_agree + 1e-6:
             if verbose:
                 print(f"  [sign-search] converged (no improvement), stopping early")
@@ -117,6 +143,14 @@ def greedy_oracle_sign_search(reconstructed_model, oracle_model, X_train, recove
     prev_agree = -1.0
     results = {'starting_agreement': float(start_agree), 'passes': []}
 
+    # Watchdog: agreement already saturated → no flip can improve it, skip.
+    if _saturated(start_agree):
+        if verbose:
+            print(f"  [greedy-sign-search] agreement already 1.0 — skipping (saturated)")
+        results['final_agreement'] = float(start_agree)
+        results['saturated'] = True
+        return results
+
     for pass_i in range(n_passes):
         this_order = list(reversed(layer_ids)) if pass_i % 2 == 0 else list(layer_ids)
         if verbose:
@@ -141,6 +175,11 @@ def greedy_oracle_sign_search(reconstructed_model, oracle_model, X_train, recove
         results['passes'].append({'pass': pass_i + 1, 'agreement': float(cur_agree),
                                    'total_flipped': total_flipped})
 
+        if _saturated(cur_agree):
+            if verbose:
+                print(f"  [greedy-sign-search] agreement hit 1.0 — stopping (saturated)")
+            results['saturated'] = True
+            break
         if cur_agree <= prev_agree + 1e-6 and total_flipped == 0:
             if verbose:
                 print(f"  [greedy-sign-search] converged, stopping early")
@@ -292,19 +331,14 @@ def _greedy_sign_pass_layer(reconstructed_model, layers, lid, recovered_masks,
             preds_curr = reconstructed_model(X_train).argmax(dim=1)
             agree_curr = (preds_curr == oracle_labels).float().mean().item()
 
+            # Watchdog: agreement saturated → no flip can improve, stop this layer.
+            if _saturated(agree_curr):
+                break
+
             orig_w = layer.weight.data[neuron_idx].clone()
             orig_b = layer.bias.data[neuron_idx].clone()
 
-            layer.weight.data[neuron_idx] = -orig_w
-
-            if duals_dir is not None:
-                dpath = os.path.join(duals_dir, f"layer{lid+1}_neuron{neuron_idx}.npy")
-                if os.path.exists(dpath):
-                    duals = np.load(dpath)
-                    if len(duals) > 0:
-                        x_d = torch.tensor(duals[:30], dtype=torch.float64)
-                        h = _hidden_activations_up_to(reconstructed_model, x_d, lid)
-                        layer.bias.data[neuron_idx] = -(h @ layer.weight.data[neuron_idx]).median()
+            _flip_neuron(reconstructed_model, layer, neuron_idx, lid, duals_dir)
 
             preds_flip = reconstructed_model(X_train).argmax(dim=1)
             agree_flip = (preds_flip == oracle_labels).float().mean().item()
@@ -355,6 +389,43 @@ def _randomize_signs(reconstructed_model, layers, recovered_masks, duals_dir, rn
 def _agreement_on(model, X, oracle_labels):
     with torch.no_grad():
         return (model(X).argmax(dim=1) == oracle_labels).float().mean().item()
+
+
+def _flip_neuron(reconstructed_model, layer, neuron_idx, lid, duals_dir):
+    """The single shared 'flip move' used by every optimizer (greedy/tabu/SA/PT).
+
+    Negates a recovered neuron's weight row (an involution) and, when duals_dir is
+    provided, re-projects its bias from the NEW row via b = -median(h_{L-1} . w),
+    so the joint w+b update stays identical across all search strategies.
+    Caller must hold no_grad."""
+    layer.weight.data[neuron_idx] = -layer.weight.data[neuron_idx]
+    if duals_dir is not None:
+        _reproject_bias_for_neuron(reconstructed_model, layer, neuron_idx, lid, duals_dir)
+
+
+def _score_objective(reconstructed_model, X, oracle_labels, mode='agree'):
+    """Return (select_score, opt_score).
+
+    select_score : true 0/1 argmax agreement vs the cached oracle labels. ALWAYS
+                   used to accept/select the final configuration (honest, hard-label).
+    opt_score    : the signal the optimizer climbs.
+        mode='agree'  -> opt_score == select_score (raw 0/1 agreement).
+        mode='margin' -> mean( logit[oracle] - max_{j!=oracle} logit[j] ) on the
+                         reconstructed model's OWN logits (still hard-label w.r.t.
+                         the victim, which only ever provided argmax labels). Gives
+                         gradient-like signal through the flat 0/1-agreement regions.
+    Caller must hold no_grad."""
+    logits = reconstructed_model(X)
+    preds = logits.argmax(dim=1)
+    agree = (preds == oracle_labels).float().mean().item()
+    if mode == 'agree':
+        return agree, agree
+    idx = oracle_labels.view(-1, 1)
+    true_logit = logits.gather(1, idx).squeeze(1)
+    masked = logits.scatter(1, idx, float('-inf'))     # new tensor; leaves logits intact
+    runner_up = masked.max(dim=1).values
+    margin = (true_logit - runner_up).mean().item()
+    return agree, margin
 
 
 # ---------------------------------------------------- Fix C2: random restarts --
@@ -428,6 +499,13 @@ def greedy_oracle_sign_search_with_restarts(
             best_score = eval_agree
             best_state = copy.deepcopy(reconstructed_model.state_dict())
             best_traversal_train = train_agree
+
+        # Watchdog: traversal 0 already at agreement 1.0 → it is objective-optimal;
+        # random restarts cannot beat it and only risk held-out overfitting. Stop.
+        if r == 0 and _saturated(train_agree):
+            if verbose:
+                print(f"  [restarts] traversal 0 at agreement 1.0 — skipping random restarts (saturated)")
+            break
 
     reconstructed_model.load_state_dict(best_state)
     final_train = _agreement_on(reconstructed_model, X_train, oracle_labels_train)
@@ -541,3 +619,389 @@ def pair_flip_lookahead(
                   f"({n_pair_flips} pair flips accepted)")
 
     return results
+
+
+# =====================================================================
+# sign_search_improve — Track A: metaheuristics on the true objective
+# (tabu search, simulated annealing). Both reuse the shared flip move
+# (`_flip_neuron`) and objective (`_score_objective`) so the move,
+# joint-w+b bias update, and safety-revert are identical to greedy.
+# They differ only in the ACCEPTANCE RULE / MEMORY, which is exactly what
+# lets them escape the single-flip local optimum greedy stalls in.
+# =====================================================================
+
+def _trial_score(reconstructed_model, layer, nidx, lid, duals_dir,
+                 X, oracle_labels, objective):
+    """Flip neuron nidx, score (select, opt), then exactly restore it.
+    Save/restore is explicit (not the involution) so it is bit-exact even
+    in the duals_dir joint-w+b regime. Caller holds no_grad."""
+    ow = layer.weight.data[nidx].clone()
+    ob = layer.bias.data[nidx].clone()
+    _flip_neuron(reconstructed_model, layer, nidx, lid, duals_dir)
+    sel, opt = _score_objective(reconstructed_model, X, oracle_labels, objective)
+    layer.weight.data[nidx] = ow
+    layer.bias.data[nidx] = ob
+    return sel, opt
+
+
+def _net_flips_vs(layer, ref_weight, recovered_idx):
+    """How many recovered rows now point opposite to a reference snapshot."""
+    n = 0
+    for nidx in recovered_idx:
+        if (layer.weight.data[int(nidx)] * ref_weight[int(nidx)]).sum().item() < 0:
+            n += 1
+    return n
+
+
+def tabu_sign_pass_layer(reconstructed_model, layers, lid, recovered_masks,
+                         X_train, oracle_labels, duals_dir=None,
+                         tabu_tenure=5, max_sweeps=4, objective='agree'):
+    """One per-layer tabu-search pass.
+
+    Each sweep: evaluate every single-flip, take the BEST move by the
+    optimization score even if it worsens agreement, but forbid re-flipping a
+    neuron for `tabu_tenure` iterations (aspiration overrides tabu when a move
+    sets a new global best true-agreement). Returns net #flips vs pass entry.
+    The configuration restored at the end is the best-seen by TRUE agreement,
+    and is never worse than the pass-entry baseline (safety-revert)."""
+    layer = layers[lid]
+    mask = recovered_masks.get(lid)
+    if mask is None:
+        return 0
+    recovered_idx = [int(i) for i in np.where(mask)[0]]
+    if not recovered_idx:
+        return 0
+
+    with torch.no_grad():
+        entry_w = layer.weight.data.clone()
+        entry_b = layer.bias.data.clone()
+        best_sel, _ = _score_objective(reconstructed_model, X_train, oracle_labels, objective)
+        if _saturated(best_sel):          # watchdog: nothing to gain on this layer
+            return 0
+        best_w, best_b = entry_w.clone(), entry_b.clone()
+        tabu_until = {i: -1 for i in recovered_idx}
+
+        it = 0
+        for _sweep in range(max_sweeps):
+            if _saturated(best_sel):
+                break
+            best_move, best_move_opt, best_move_sel = None, -float('inf'), None
+            for ni in recovered_idx:
+                sel, opt = _trial_score(reconstructed_model, layer, ni, lid,
+                                        duals_dir, X_train, oracle_labels, objective)
+                is_tabu = tabu_until[ni] >= it
+                aspires = sel > best_sel + 1e-12
+                if is_tabu and not aspires:
+                    continue
+                if opt > best_move_opt + 1e-15:
+                    best_move, best_move_opt, best_move_sel = ni, opt, sel
+            if best_move is None:
+                break
+            _flip_neuron(reconstructed_model, layer, best_move, lid, duals_dir)
+            it += 1
+            tabu_until[best_move] = it + tabu_tenure
+            if best_move_sel > best_sel + 1e-12:
+                best_sel = best_move_sel
+                best_w = layer.weight.data.clone()
+                best_b = layer.bias.data.clone()
+
+        layer.weight.data = best_w
+        layer.bias.data = best_b
+        return _net_flips_vs(layer, entry_w, recovered_idx)
+
+
+def sa_sign_pass_layer(reconstructed_model, layers, lid, recovered_masks,
+                       X_train, oracle_labels, duals_dir=None,
+                       sweeps=4, t0=0.02, tend=1e-4, objective='agree', rng=None):
+    """One per-layer simulated-annealing pass.
+
+    Proposes random single flips; accepts with prob min(1, exp(Δopt / T)) on a
+    geometric cooling schedule from `t0` to `tend`. At T→0 this reduces to
+    greedy; at T>0 it accepts worsening flips, reaching pair/k-flip-coupled
+    configurations greedy cannot. Restores the best-seen state by TRUE
+    agreement; never worse than the pass-entry baseline."""
+    layer = layers[lid]
+    mask = recovered_masks.get(lid)
+    if mask is None:
+        return 0
+    recovered_idx = [int(i) for i in np.where(mask)[0]]
+    if not recovered_idx:
+        return 0
+    if rng is None:
+        rng = np.random.RandomState(0)
+
+    with torch.no_grad():
+        entry_w = layer.weight.data.clone()
+        cur_sel, cur_opt = _score_objective(reconstructed_model, X_train, oracle_labels, objective)
+        if _saturated(cur_sel):           # watchdog: nothing to gain on this layer
+            return 0
+        best_sel = cur_sel
+        best_w = layer.weight.data.clone()
+        best_b = layer.bias.data.clone()
+
+        n_steps = max(1, sweeps * len(recovered_idx))
+        for step in range(n_steps):
+            frac = step / max(1, n_steps - 1)
+            T = t0 * (tend / t0) ** frac if t0 > 0 else 0.0
+            ni = recovered_idx[rng.randint(len(recovered_idx))]
+            ow = layer.weight.data[ni].clone()
+            ob = layer.bias.data[ni].clone()
+            _flip_neuron(reconstructed_model, layer, ni, lid, duals_dir)
+            sel, opt = _score_objective(reconstructed_model, X_train, oracle_labels, objective)
+            d = opt - cur_opt
+            accept = d >= 0 or (T > 0 and rng.random() < math.exp(d / T))
+            if accept:
+                cur_opt, cur_sel = opt, sel
+                if sel > best_sel + 1e-12:
+                    best_sel = sel
+                    best_w = layer.weight.data.clone()
+                    best_b = layer.bias.data.clone()
+                    if _saturated(best_sel):    # watchdog: reached 1.0, stop
+                        break
+            else:
+                layer.weight.data[ni] = ow
+                layer.bias.data[ni] = ob
+
+        layer.weight.data = best_w
+        layer.bias.data = best_b
+        return _net_flips_vs(layer, entry_w, recovered_idx)
+
+
+def _metaheuristic_oracle_sign_search(reconstructed_model, oracle_model, X_train,
+                                      recovered_masks, pass_fn, layer_ids=(0, 1, 2, 3),
+                                      n_passes=5, verbose=True, tag='meta'):
+    """Generic multi-pass driver shared by tabu / SA. `pass_fn(model, layers,
+    lid, masks, X, oracle_labels)` runs one per-layer optimization pass and
+    returns net #flips. Alternates layer order per pass; early-stops on no
+    improvement and no flips (same contract as greedy_oracle_sign_search)."""
+    reconstructed_model.eval()
+    oracle_model.eval()
+    with torch.no_grad():
+        oracle_labels = oracle_model(X_train).argmax(dim=1)
+    layers = [reconstructed_model.fc1, reconstructed_model.fc2,
+              reconstructed_model.fc3, reconstructed_model.fc4]
+
+    def _cur():
+        return _agreement_on(reconstructed_model, X_train, oracle_labels)
+
+    start = _cur()
+    if verbose:
+        print(f"  [{tag}-sign-search] starting agreement: {start:.4f}")
+
+    # GLOBAL best-by-true-agreement guard: a metaheuristic accepts temporary
+    # worsening to escape local optima, so the final on-model state may be worse
+    # than something already visited. We snapshot the best full-model state ever
+    # seen (incl. the incoming config) and restore it at the end. This makes the
+    # search monotone-safe: it can never return below where it started.
+    best_agree = start
+    best_state = copy.deepcopy(reconstructed_model.state_dict())
+
+    # Watchdog: agreement already saturated → no flip can improve it, skip search.
+    if _saturated(start):
+        if verbose:
+            print(f"  [{tag}-sign-search] agreement already 1.0 — skipping (saturated)")
+        results = {'starting_agreement': float(start), 'passes': [],
+                   'final_agreement': float(start), 'saturated': True}
+        return results
+
+    prev = -1.0
+    saturated = False
+    results = {'starting_agreement': float(start), 'passes': []}
+    for pass_i in range(n_passes):
+        order = list(reversed(layer_ids)) if pass_i % 2 == 0 else list(layer_ids)
+        total = 0
+        for lid in order:
+            total += pass_fn(reconstructed_model, layers, lid, recovered_masks,
+                             X_train, oracle_labels)
+            a = _cur()
+            if a > best_agree + 1e-12:
+                best_agree = a
+                best_state = copy.deepcopy(reconstructed_model.state_dict())
+            if _saturated(best_agree):
+                saturated = True
+                break
+        cur = _cur()
+        if verbose:
+            print(f"  [{tag}-sign-search] pass {pass_i+1}/{n_passes} "
+                  f"agreement: {cur:.4f} (best {best_agree:.4f}, {total} net flips)")
+        results['passes'].append({'pass': pass_i + 1, 'agreement': float(cur),
+                                   'total_flipped': int(total)})
+        if saturated:
+            if verbose:
+                print(f"  [{tag}-sign-search] agreement hit 1.0 — stopping (saturated)")
+            results['saturated'] = True
+            break
+        if cur <= prev + 1e-6 and total == 0:
+            if verbose:
+                print(f"  [{tag}-sign-search] converged, stopping early")
+            break
+        prev = cur
+
+    reconstructed_model.load_state_dict(best_state)
+    results['final_agreement'] = float(_cur())
+    return results
+
+
+def tabu_oracle_sign_search(reconstructed_model, oracle_model, X_train, recovered_masks,
+                            layer_ids=(0, 1, 2, 3), n_passes=5, tabu_tenure=5,
+                            max_sweeps=4, objective='agree', verbose=True, duals_dir=None,
+                            warm_start_greedy=True, greedy_passes=5):
+    """Tabu-search sign assignment (drop-in alternative to greedy_oracle_sign_search).
+
+    With `warm_start_greedy` (default) a greedy descent runs first, so the result
+    is guaranteed >= greedy; tabu then escapes greedy's local optimum from there.
+    """
+    if warm_start_greedy:
+        greedy_oracle_sign_search(reconstructed_model, oracle_model, X_train,
+                                  recovered_masks, layer_ids=layer_ids,
+                                  n_passes=greedy_passes, verbose=False, duals_dir=duals_dir)
+
+    def _pass(model, layers, lid, masks, X, ol):
+        return tabu_sign_pass_layer(model, layers, lid, masks, X, ol,
+                                    duals_dir=duals_dir, tabu_tenure=tabu_tenure,
+                                    max_sweeps=max_sweeps, objective=objective)
+    return _metaheuristic_oracle_sign_search(
+        reconstructed_model, oracle_model, X_train, recovered_masks, _pass,
+        layer_ids=layer_ids, n_passes=n_passes, verbose=verbose, tag='tabu')
+
+
+def sa_oracle_sign_search(reconstructed_model, oracle_model, X_train, recovered_masks,
+                          layer_ids=(0, 1, 2, 3), n_passes=5, sweeps=4, t0=0.02,
+                          tend=1e-4, objective='agree', seed=0, verbose=True, duals_dir=None,
+                          warm_start_greedy=True, greedy_passes=5):
+    """Simulated-annealing sign assignment (drop-in alternative to greedy).
+
+    With `warm_start_greedy` (default) a greedy descent runs first, so the result
+    is guaranteed >= greedy; SA then escapes via temperature-driven worsening moves.
+    """
+    if warm_start_greedy:
+        greedy_oracle_sign_search(reconstructed_model, oracle_model, X_train,
+                                  recovered_masks, layer_ids=layer_ids,
+                                  n_passes=greedy_passes, verbose=False, duals_dir=duals_dir)
+
+    rng = np.random.RandomState(seed)
+
+    def _pass(model, layers, lid, masks, X, ol):
+        return sa_sign_pass_layer(model, layers, lid, masks, X, ol,
+                                  duals_dir=duals_dir, sweeps=sweeps, t0=t0,
+                                  tend=tend, objective=objective, rng=rng)
+    return _metaheuristic_oracle_sign_search(
+        reconstructed_model, oracle_model, X_train, recovered_masks, _pass,
+        layer_ids=layer_ids, n_passes=n_passes, verbose=verbose, tag='sa')
+
+
+# ----------------------------------------- Track A: parallel tempering (M4) ----
+
+def _sync_layer_to_mask(reconstructed_model, layer, entry_w, recovered_idx,
+                        flip_mask, lid, duals_dir):
+    """Set the layer's recovered rows to entry_w with `flip_mask` applied
+    (True = negated from entry), re-projecting biases when duals_dir is given.
+    Caller holds no_grad."""
+    for j, nidx in enumerate(recovered_idx):
+        layer.weight.data[nidx] = -entry_w[nidx] if flip_mask[j] else entry_w[nidx].clone()
+    if duals_dir is not None:
+        for nidx in recovered_idx:
+            _reproject_bias_for_neuron(reconstructed_model, layer, nidx, lid, duals_dir)
+
+
+def pt_sign_pass_layer(reconstructed_model, layers, lid, recovered_masks,
+                       X_train, oracle_labels, duals_dir=None,
+                       n_replicas=6, sweeps=3, t_min=1e-3, t_max=0.05,
+                       objective='agree', rng=None):
+    """One per-layer parallel-tempering (replica-exchange) pass.
+
+    Runs `n_replicas` copies of the layer's sign vector on a geometric
+    temperature ladder t_min..t_max. Each sweep: every replica does one local
+    SA sweep (k single-flip Metropolis proposals at its own temperature), then
+    adjacent replicas attempt a swap with prob min(1, exp((1/Ti-1/Tj)(Ei-Ej))),
+    E = -opt. Hot replicas cross barriers single-chain SA cannot; swaps inject
+    those discoveries into the cold chain. Restores the global best-by-TRUE-
+    agreement seen; never worse than the pass-entry baseline."""
+    layer = layers[lid]
+    mask = recovered_masks.get(lid)
+    if mask is None:
+        return 0
+    recovered_idx = [int(i) for i in np.where(mask)[0]]
+    k = len(recovered_idx)
+    if k == 0:
+        return 0
+    if rng is None:
+        rng = np.random.RandomState(0)
+
+    with torch.no_grad():
+        entry_w = layer.weight.data.clone()
+        temps = [t_min * (t_max / t_min) ** (i / max(1, n_replicas - 1))
+                 for i in range(n_replicas)]
+        # All replicas start from the entry (warm-started) config.
+        repl = [np.zeros(k, dtype=bool) for _ in range(n_replicas)]
+        cur_opt = [None] * n_replicas
+
+        # Global best by true agreement (entry config is the first candidate).
+        _sync_layer_to_mask(reconstructed_model, layer, entry_w, recovered_idx,
+                            repl[0], lid, duals_dir)
+        best_sel, opt0 = _score_objective(reconstructed_model, X_train, oracle_labels, objective)
+        if _saturated(best_sel):          # watchdog: nothing to gain on this layer
+            return 0
+        best_mask = repl[0].copy()
+        for m in range(n_replicas):
+            cur_opt[m] = opt0
+
+        for _sweep in range(sweeps):
+            if _saturated(best_sel):
+                break
+            for mi in range(n_replicas):
+                T = temps[mi]
+                _sync_layer_to_mask(reconstructed_model, layer, entry_w,
+                                    recovered_idx, repl[mi], lid, duals_dir)
+                cur = cur_opt[mi]
+                for _ in range(k):
+                    j = rng.randint(k)
+                    nidx = recovered_idx[j]
+                    _flip_neuron(reconstructed_model, layer, nidx, lid, duals_dir)
+                    sel, opt = _score_objective(reconstructed_model, X_train, oracle_labels, objective)
+                    d = opt - cur
+                    if d >= 0 or (T > 0 and rng.random() < math.exp(d / T)):
+                        cur = opt
+                        repl[mi][j] = not repl[mi][j]
+                        if sel > best_sel + 1e-12:
+                            best_sel = sel
+                            best_mask = repl[mi].copy()
+                    else:
+                        _flip_neuron(reconstructed_model, layer, nidx, lid, duals_dir)
+                cur_opt[mi] = cur
+                if _saturated(best_sel):
+                    break
+            # adjacent replica-exchange swaps
+            for mi in range(n_replicas - 1):
+                delta = (1.0 / temps[mi] - 1.0 / temps[mi + 1]) * (cur_opt[mi] - cur_opt[mi + 1])
+                # E = -opt; accept if (1/Ti-1/Tj)(Ei-Ej) >= 0 i.e. delta(as defined) >= 0
+                if delta >= 0 or rng.random() < math.exp(delta):
+                    repl[mi], repl[mi + 1] = repl[mi + 1], repl[mi]
+                    cur_opt[mi], cur_opt[mi + 1] = cur_opt[mi + 1], cur_opt[mi]
+
+        _sync_layer_to_mask(reconstructed_model, layer, entry_w, recovered_idx,
+                            best_mask, lid, duals_dir)
+        return _net_flips_vs(layer, entry_w, recovered_idx)
+
+
+def pt_oracle_sign_search(reconstructed_model, oracle_model, X_train, recovered_masks,
+                          layer_ids=(0, 1, 2, 3), n_passes=3, n_replicas=6, sweeps=3,
+                          t_min=1e-3, t_max=0.05, objective='agree', seed=0,
+                          verbose=True, duals_dir=None, warm_start_greedy=True,
+                          greedy_passes=5):
+    """Parallel-tempering sign assignment (strongest Track-A optimizer; reserve
+    for the widest layers). Warm-started from greedy so result is >= greedy."""
+    if warm_start_greedy:
+        greedy_oracle_sign_search(reconstructed_model, oracle_model, X_train,
+                                  recovered_masks, layer_ids=layer_ids,
+                                  n_passes=greedy_passes, verbose=False, duals_dir=duals_dir)
+    rng = np.random.RandomState(seed)
+
+    def _pass(model, layers, lid, masks, X, ol):
+        return pt_sign_pass_layer(model, layers, lid, masks, X, ol,
+                                  duals_dir=duals_dir, n_replicas=n_replicas,
+                                  sweeps=sweeps, t_min=t_min, t_max=t_max,
+                                  objective=objective, rng=rng)
+    return _metaheuristic_oracle_sign_search(
+        reconstructed_model, oracle_model, X_train, recovered_masks, _pass,
+        layer_ids=layer_ids, n_passes=n_passes, verbose=verbose, tag='pt')

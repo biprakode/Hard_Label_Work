@@ -46,7 +46,7 @@ N_CID = 2 # how many of the strongest output layer classes to consider
 # Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
 #   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved exactly)
 #   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha) — applied via _apply_act in this file
-LEAKY_ALPHA = 0.01
+LEAKY_ALPHA = 0.0
 
 
 def _apply_act(x):

@@ -71,6 +71,14 @@ configurations (6 make_blobs tiny models + 2 CIFAR-10 flagships). It bundles:
   best at end. Prevents refinement overfit.
 - **AdamW + CosineAnnealingLR** — `--refine-weight-decay 1e-4 --refine-cosine-lr`
   for the refinement step.
+- **Improved evaluation scorecard (step 9, LATEST WORKFLOW)** —
+  `analysis/evaluate_extraction_quality.py` runs automatically after extraction.
+  It emits the multi-metric extraction-vs-distillation scorecard (Metrics 1–5 +
+  EQS, `results/reports/eval_<arch>_<date>.md`), **auto-builds the mandatory
+  distillation baseline** if missing, and **auto-detects the activation**
+  (ReLU vs LeakyReLU(α)) from the extraction metrics' self-describing
+  `leaky_alpha` field — so a stale global `LEAKY_ALPHA` can no longer silently
+  corrupt the eval. See "Step 9 — Improved evaluation" below.
 
 ### Per-arch tuning (set inside the driver)
 
@@ -848,6 +856,62 @@ escaping the sign-search local minimum that previously trapped L0 at 49 %. See:
   "advantage over naïve baseline" framing
 - `results/reports/cifar_relu_fixed_2026-06-05.md` — the CIFAR-fix run
   report with per-fix attribution and open threads
+
+### Step 9 — Improved evaluation (beyond naive agreement)
+
+The single "prediction agreement" number above cannot, on its own, tell
+**extraction** (frozen recovered rows + ML gap-closing) apart from **pure
+distillation**, and it is confounded by the victim's ~53 % accuracy. The improved
+scorecard (spec: `../Evaluation_Metric_Improve/evaluation_metrics_REPORT.md`)
+replaces it with a multi-metric suite:
+
+**This runs automatically as step 9 of `run_one_model_enhanced.sh`** — it is part
+of the LATEST WORKFLOW. You can also run it standalone on any prior extraction:
+
+```bash
+# Only the extraction arm needs to exist — the distillation baseline is built
+# automatically if missing (mandatory two-arm comparison; see below):
+python3 analysis/evaluate_extraction_quality.py --full       # CIFAR flagship
+python3 analysis/evaluate_extraction_quality.py --makeblobs  # tiny relu (synthetic)
+python3 analysis/evaluate_extraction_quality.py --tiniest    # smoke / structural
+```
+
+**Activation is auto-detected, not assumed.** The eval no longer trusts the global
+`LEAKY_ALPHA`: it reads the self-describing `leaky_alpha` recorded in the extraction
+metrics (falling back to the victim `*_alpha.txt` sidecar / filename suffix), pins
+the whole process to that activation, and re-resolves the victim path accordingly.
+This eliminates the silent ReLU↔LeakyReLU mismatch that otherwise produces garbage
+numbers when a prior run left the global toggle on the other activation.
+
+**The distillation baseline is a mandatory step for every eval.** Every report is a
+two-arm extraction-vs-distillation comparison; without the baseline the EQS gap,
+McNemar significance, and off-distribution discriminator have nothing to compare
+against. If `reconstructed_<arch>_distillation.pth` is not on disk the driver builds
+it on the fly via `extraction_pipeline.distillation_baseline.ensure_distillation_baseline`
+(same architecture, no frozen rows: empty signature/sign paths → Kaiming everywhere →
+`--refine-unfreeze` trains all rows on the oracle's hard labels, same Fix-B
+regularisers as the extraction arm). The baseline is cached and reused on later
+runs; force a rebuild with `--force-distill`. The only way to skip it is the explicit
+`--allow-single-arm` opt-out (extraction-only report).
+
+Computes (all hard-label / argmax-only where the spec requires):
+
+| Metric | What it adds over naive agreement |
+|---|---|
+| **1 — in-dist fidelity + accuracy** | the headline gap, but reported with accuracy alongside |
+| **2 — margin-conditioned fidelity** | stratifies by a hard-label boundary-distance proxy (cheap bisection); defuses the 53 %-victim confound |
+| **3 — off-distribution + interpolation agreement** | the **extraction-vs-distillation discriminator** — extraction holds up off-manifold where distillation decays |
+| **4 — paired McNemar + bootstrap CI on the gap** | single-run significance (N≥10-seed harness deferred) |
+| **5 — structural receipts (\|cos\|, sign-acc, coverage)** | parameter recovery the distillation arm provably lacks |
+| **EQS (0–100)** | composite score, C4 renormalized out; reported per-arm with component profile |
+
+Outputs (canonical CIFAR run, `X_test3`): in-dist fidelity gap **+6.1 pt**, but the
+off-distribution gap is **+14 pt** (uniform) — the geometry signal that proves
+extraction — with McNemar p≪1e-20 and EQS gap ≈ +23. Reports are written to
+`results/reports/eval_<arch>_<date>.md` and copied to `../Evaluation_Metric_Improve/`
+(plus `eval_<arch>.json`) for session resume. Deferred hooks (HopSkipJump boundary
+co-location, adversarial transfer, full N-seed harness, Liu coverage) are stubbed in
+`analysis/extraction_pipeline/eval_metrics.py`.
 
 ## Leaky ReLU usage
 

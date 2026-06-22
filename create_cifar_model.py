@@ -199,8 +199,13 @@ def main():
     # is promoted into the query/training tier alongside X_test.
     x_test3 = x_train[10000:20000].copy()
     y_test3 = y_train[10000:20000].copy()
-    x_tr = x_train[:-10000]
-    y_tr = y_train[:-10000]
+    # Build training set excluding BOTH held-out slices so X_test3 is honest.
+    keep_mask = np.ones(len(x_train), dtype=bool)
+    keep_mask[10000:20000] = False
+    keep_mask[40000:50000] = False
+    x_tr = x_train[keep_mask]
+    y_tr = y_train[keep_mask]
+    assert len(x_tr) == 30000, f"expected 30000 training samples after dropping both holdouts, got {len(x_tr)}"
 
     X_tr = pre(x_tr)        # [-1,1] for training
     X_te = pre(x_test)

@@ -43,10 +43,32 @@ PER_NEURON_CAP = int(_os.environ.get("CLUSTER_PER_NEURON_CAP", "150"))
 _LAYERS_ENV = _os.environ.get("CLUSTER_LAYERS", "").strip()
 ONLY_LAYERS = set(int(x) for x in _LAYERS_ENV.split(",") if x != "") if _LAYERS_ENV else None
 
+# MERGE mode (chunked dual search, e.g. the Kaggle CIFAR run under a disk cap):
+# preload any existing 1-cluster-{L}.p into the buckets before streaming the new
+# pickles, so clustering a fresh chunk ACCUMULATES into the prior chunks' clusters
+# (still capped at PER_NEURON_CAP) instead of overwriting them. This lets the
+# driver cluster+delete raw pickles after every chunk and keep peak disk low.
+MERGE = _os.environ.get("CLUSTER_MERGE", "0") == "1"
+
 
 def stream_cluster_all():
     n_hidden_layers = len(LAYER_BOUNDARIES) - 1
     clusters = [defaultdict(list) for _ in range(n_hidden_layers)]
+
+    if MERGE:
+        preloaded = 0
+        for L in range(n_hidden_layers):
+            if ONLY_LAYERS is not None and L not in ONLY_LAYERS:
+                continue
+            prev_path = os.path.join(OUT_DIR, f"1-cluster-{L}.p")
+            if os.path.exists(prev_path):
+                with open(prev_path, 'rb') as f:
+                    prev = pickle.load(f)
+                for flat_idx, lst in prev.items():
+                    clusters[L][flat_idx] = list(lst[:PER_NEURON_CAP])
+                    preloaded += len(clusters[L][flat_idx])
+                del prev
+        print(f"[merge] preloaded {preloaded} triplets from existing cluster files", flush=True)
 
     files = sorted(os.listdir(ROOT))
     total_files = len(files)

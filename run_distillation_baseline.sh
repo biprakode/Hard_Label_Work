@@ -147,5 +147,13 @@ with open(path, "w") as f:
 print(f"Wrote {path}")
 PY
 
+# ---------- STEP H — improved evaluation scorecard (non-breaking) -----------
+# Both arms now exist on disk, so emit the full metric suite + EQS comparison
+# (spec: Evaluation_Metric_Improve/evaluation_metrics_REPORT.md). A failure here
+# must NOT fail the baseline run.
+echo "=== [H] improved evaluation scorecard (analysis/evaluate_extraction_quality.py) ===" | tee -a "$LOG"
+"$PY" "$HERE/analysis/evaluate_extraction_quality.py" --full 2>&1 | tee -a "$LOG" || \
+    echo "  (improved evaluation failed — baseline run still OK)" | tee -a "$LOG"
+
 t_total=$(( $(date +%s) - t_total_start ))
 echo "=== TOTAL wall time for $TAG: ${t_total}s ===" | tee -a "$LOG"

@@ -30,7 +30,7 @@ MAKEBLOBS = False  # Use make_blobs synthetic dataset instead of CIFAR-10
 # across signature_recovery, sign_recovery, and analysis/extraction_pipeline
 # (Phase-3 reconstruction — formerly the monolithic analysis/test_extraction4.py,
 # now a modular package; the legacy file is preserved as a re-export shim).
-LEAKY_ALPHA = 0.01
+LEAKY_ALPHA = 0.0
 
 
 def act(x):

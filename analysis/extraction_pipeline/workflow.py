@@ -20,6 +20,7 @@ import argparse
 import numpy as np
 import torch
 
+from . import config as _config
 from .config import (
     SIGNATURE_WEIGHTS_PATH, SIGN_RECOVERY_PATH, OUTPUT_PATH,
     DUAL_POINTS_DIR,
@@ -35,6 +36,9 @@ from .sign_search import (
     oracle_sign_search,
     greedy_oracle_sign_search_with_restarts,
     pair_flip_lookahead,
+    tabu_oracle_sign_search,
+    sa_oracle_sign_search,
+    pt_oracle_sign_search,
 )
 from .refinement import oracle_label_refinement
 
@@ -119,6 +123,22 @@ def build_parser():
                              "0 → disabled (legacy)")
     parser.add_argument('--sign-refine-mini-epochs', type=int, default=20,
                         help="Epochs per mini-refinement burst when --sign-refine-cycles > 0")
+
+    # ---- sign_search_improve: combinatorial optimizers (Track A) -------------
+    parser.add_argument('--sign-search-method', default='greedy',
+                        choices=['greedy', 'tabu', 'sa', 'pt'],
+                        help="Per-layer sign-assignment optimizer. 'greedy' (default) "
+                             "is the legacy brute-force/greedy + restarts path. 'tabu', "
+                             "'sa' and 'pt' (parallel tempering) warm-start from greedy "
+                             "then escape its local optimum on the same cached-oracle "
+                             "objective (zero extra oracle queries). 'pt' is the strongest "
+                             "(M replicas) but most expensive — reserve for wide layers.")
+    parser.add_argument('--sign-search-objective', default='agree',
+                        choices=['agree', 'margin'],
+                        help="Optimization signal for tabu/sa: raw 0/1 argmax agreement, "
+                             "or a margin-smoothed signal from the reconstructed model's "
+                             "own logits (still hard-label; accept/select stays on true "
+                             "agreement). Ignored when --sign-search-method=greedy.")
 
     # ------------- Fix A (X_test3 honest-eval contract; CIFAR flagship only) -----
     parser.add_argument('--eval-on-test3', action='store_true',
@@ -262,7 +282,19 @@ def main(argv=None):
                 print(f"\n--- sign cycle {cycle_i+1}/{n_cycles} ---")
 
             # ---- (a) traversal ----
-            if args.sign_restarts > 0:
+            if args.sign_search_method in ('tabu', 'sa', 'pt'):
+                print(f"Using {args.sign_search_method.upper()} sign search "
+                      f"(objective={args.sign_search_objective}, warm-started from greedy)")
+                _meta = {'tabu': tabu_oracle_sign_search,
+                         'sa': sa_oracle_sign_search,
+                         'pt': pt_oracle_sign_search}[args.sign_search_method]
+                cycle_search_result = _meta(
+                    reconstructed_model, true_model, X_train_phase3, recovered_masks_by_layer,
+                    layer_ids=tuple(range(len(layer_config))),
+                    objective=args.sign_search_objective, verbose=True,
+                    duals_dir=duals_for_search,
+                )
+            elif args.sign_restarts > 0:
                 print(f"Using greedy with random restarts: n_restarts={args.sign_restarts}, "
                       f"selection on {'X_test3' if restart_X_eval is not None else 'X_train'}")
                 cycle_search_result = greedy_oracle_sign_search_with_restarts(
@@ -435,6 +467,10 @@ def main(argv=None):
     all_metrics = {
         'model_type': model_type_str,
         'model_name': model_name,
+        'arch_key': arch_key,
+        # Self-describing activation: lets the eval driver auto-detect ReLU vs
+        # LeakyReLU(alpha) without depending on the mutable global LEAKY_ALPHA.
+        'leaky_alpha': float(_config.LEAKY_ALPHA),
         'layer_config': {str(k): list(v) for k, v in layer_config.items()},
         'layer_metrics': serializable_metrics,
         'recovery_stats': {
@@ -458,6 +494,8 @@ def main(argv=None):
         'sign_restarts': int(args.sign_restarts),
         'sign_pair_lookahead': int(args.sign_pair_lookahead),
         'sign_refine_cycles': int(args.sign_refine_cycles),
+        'sign_search_method': str(args.sign_search_method),
+        'sign_search_objective': str(args.sign_search_objective),
         'refinement_applied': bool(args.refine),
         'refinement_results': refine_results,
         'from_scratch': bool(args.from_scratch),

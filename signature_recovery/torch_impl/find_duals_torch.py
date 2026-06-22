@@ -26,6 +26,15 @@ Constants preserved verbatim (see signature_recovery/MIGRATION_NOTES.md):
   step too-big > 10 ; too-small <= 1e-4 ; binary search |upper-lower| > 1e-8 ;
   is_on_boundary |gap| < 1e-10 ; a_bit_past offset +1e-4 ;
   refine Newton tol 1e-13 / 10 iters / h=1e-6 ; refine fallback step list .
+
+GPU SUPPORT (Kaggle): all walk tensors and the oracle forward run on DEVICE
+(cuda if available, else cpu), float64 throughout — numerically identical to the
+CPU path (float64 GPU matmul differs only at the last ULP, far below the 1e-8
+bisection tolerance). The GPU model is installed for THIS process only
+(``utils.cheat_net_cuda``); the clustering stage imports utils fresh and keeps the
+CPU model, so ``cheat_neuron_diff_cuda``'s CPU assumption is unaffected. Outputs
+are moved back to CPU numpy before pickling, so the on-disk format is unchanged.
+On a CPU-only box DEVICE == cpu and every ``.to(DEVICE)`` is a no-op.
 """
 import os
 import sys
@@ -46,7 +55,17 @@ if _SIGREC not in sys.path:
 # Single source of truth for the configured oracle, dims and activation toggle.
 # Importing utils does NOT run anything heavy (no __main__), it just loads the model.
 import utils
-from utils import IDIM, LEAKY_ALPHA, cheat_net_cuda, bmodel, gapt, TINIEST, TINIER
+from utils import IDIM, LEAKY_ALPHA, bmodel, gapt, TINIEST, TINIER
+
+# Device for the dual search. cuda on Kaggle's GPU runtime, cpu on the dev box /
+# during the local smoke test. We move the oracle onto DEVICE for THIS process
+# only (bmodel/gapt close over the utils module global, so reassigning it here is
+# enough); the separate clustering process keeps utils' default CPU model.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+utils.cheat_net_cuda = utils.cheat_net_cuda.to(DEVICE).double()
+if DEVICE.type == "cuda":
+    print(f"[find_duals_torch] CUDA dual search on {torch.cuda.get_device_name(0)} "
+          f"(float64)", flush=True)
 
 # CIFAR (flagship) seeds boundary searches from REAL test images, mirroring the
 # original find_decision_boundary()'s non-tiny branch; tiny/make_blobs seed from
@@ -57,13 +76,18 @@ _CIFAR_SEED = not (utils.TINY or utils.TINIER or utils.TINIEST)
 TARGET = 3000 if TINIEST else (2000 if TINIER else 10000)
 
 # Step sweep grid — identical to the original's 10**np.arange(-5, 5, .1).
-_STEP_VALS = torch.tensor(10.0 ** np.arange(-5, 5, 0.1), dtype=torch.float64)
+_STEP_VALS = torch.tensor(10.0 ** np.arange(-5, 5, 0.1), dtype=torch.float64, device=DEVICE)
 # refine() fallback step list — identical to refine_to_decision_boundary().
 _REFINE_FALLBACK_STEPS = [1e6, 2e6, 5e6, 1e5, 2e5, 5e5, 1e4, 2e4, 5e4, 1e3, 2e3, 5e3, 1e2]
 
 
+def _t(arr):
+    """numpy/array -> float64 tensor on DEVICE (replaces torch.from_numpy)."""
+    return torch.as_tensor(arr, dtype=torch.float64, device=DEVICE)
+
+
 def _bmodel(X):
-    """Batched oracle argmax. X: (B, IDIM) tensor -> labels (B,) int."""
+    """Batched oracle argmax. X: (B, IDIM) tensor on DEVICE -> labels (B,) int."""
     return bmodel(X)
 
 
@@ -88,7 +112,7 @@ def _get_normal_batch(boundary):
     x = boundary.detach().clone().requires_grad_(True)
     out = gapt(x, grad=True)              # (B,) — builds graph through forward_grad
     out.sum().backward()
-    rnd = torch.from_numpy(np.random.normal(0.0, 1.0, size=(x.shape[0], 1)))
+    rnd = _t(np.random.normal(0.0, 1.0, size=(x.shape[0], 1)))
     real = rnd * x.grad
     real = real / torch.sqrt((real ** 2).sum(dim=1, keepdim=True))
     return real.detach()                 # (B, IDIM)
@@ -135,21 +159,21 @@ def _init_boundaries(B):
     """
     pts_a = _sample_seed_points(B)
     pts_b = _sample_seed_points(B)
-    ta = torch.from_numpy(pts_a)
-    tb = torch.from_numpy(pts_b)
-    la = _bmodel(ta).numpy()
-    lb = _bmodel(tb).numpy()
+    ta = _t(pts_a)
+    tb = _t(pts_b)
+    la = _bmodel(ta).cpu().numpy()
+    lb = _bmodel(tb).cpu().numpy()
     for _ in range(50):
         same = (la == lb)
         if not same.any():
             break
         pts_b[same] = _sample_seed_points(int(same.sum()))
-        tb = torch.from_numpy(pts_b)
-        lb = _bmodel(tb).numpy()
+        tb = _t(pts_b)
+        lb = _bmodel(tb).cpu().numpy()
     ok = la != lb
     if not ok.any():
         return None, 0
-    bnd = _bisect_batch(torch.from_numpy(pts_a[ok]), torch.from_numpy(pts_b[ok]))
+    bnd = _bisect_batch(_t(pts_a[ok]), _t(pts_b[ok]))
     return bnd, int(ok.sum())
 
 
@@ -184,13 +208,13 @@ def _refine_batch(a_bit_past):
     # shrinking radii until a label flip brackets the boundary, then bisect.
     need = ~ok
     if need.any():
-        found = torch.zeros(B, dtype=torch.bool)
+        found = torch.zeros(B, dtype=torch.bool, device=DEVICE)
         r_keep = torch.zeros_like(x)
         for step in _REFINE_FALLBACK_STEPS:
             todo = need & (~found)
             if not todo.any():
                 break
-            r = torch.from_numpy(np.random.normal(size=(B, IDIM))) / step
+            r = _t(np.random.normal(size=(B, IDIM))) / step
             flip = _bmodel(x + r) != _bmodel(x - r)
             newly = todo & flip
             r_keep = torch.where(newly.unsqueeze(1), r, r_keep)
@@ -220,11 +244,11 @@ def find_batch(target=TARGET, batch_size=256, max_outer=2000, verbose=True):
 
         start = boundary.clone()
         # Fixed random unit vector per lane (find_dual_points's `rr`).
-        rr = torch.from_numpy(np.random.normal(size=(B, IDIM)))
+        rr = _t(np.random.normal(size=(B, IDIM)))
         rr = rr / torch.sqrt((rr ** 2).sum(dim=1, keepdim=True))
 
-        last_dist = torch.full((B,), 1e9, dtype=torch.float64)
-        ids = torch.arange(B)                  # original lane id of each surviving row
+        last_dist = torch.full((B,), 1e9, dtype=torch.float64, device=DEVICE)
+        ids = torch.arange(B, device=DEVICE)   # original lane id of each surviving row
         lane_pairs = {i: [] for i in range(B)}  # per lane: list of (left, dual) tensors
 
         def _filt(mask, *tensors):
@@ -253,9 +277,9 @@ def find_batch(target=TARGET, batch_size=256, max_outer=2000, verbose=True):
 
             # --- upper-bound step sweep (10**arange(-5,5,.1)) ---
             k = boundary.shape[0]
-            prev = torch.full((k,), float(_STEP_VALS[0]), dtype=torch.float64)
-            step_at = torch.full((k,), float('nan'), dtype=torch.float64)
-            broke = torch.zeros(k, dtype=torch.bool)
+            prev = torch.full((k,), float(_STEP_VALS[0]), dtype=torch.float64, device=DEVICE)
+            step_at = torch.full((k,), float('nan'), dtype=torch.float64, device=DEVICE)
+            broke = torch.zeros(k, dtype=torch.bool, device=DEVICE)
             for sv in _STEP_VALS:
                 if broke.all():
                     break
@@ -266,7 +290,7 @@ def find_batch(target=TARGET, batch_size=256, max_outer=2000, verbose=True):
                 broke = broke | newbroke
             # lanes still on-boundary at the largest sv (>10) -> caught by too-big guard
             step_at = torch.where(torch.isnan(step_at),
-                                  torch.tensor(float(_STEP_VALS[-1])), step_at)
+                                  torch.tensor(float(_STEP_VALS[-1]), device=DEVICE), step_at)
 
             # --- step guards: too big (>10) or too small (<=1e-4) end the path ---
             survive = (step_at <= 10) & (step_at > 1e-4)
@@ -308,9 +332,10 @@ def find_batch(target=TARGET, batch_size=256, max_outer=2000, verbose=True):
                     ok, boundary, start, rr, ids, last_dist)
 
         # --- zip consecutive (left,dual) pairs per lane -> (left, dual, right) ---
+        # Move back to CPU numpy here so the on-disk pickle format is unchanged.
         for pairs in lane_pairs.values():
             for (l0, d0), (l1, _d1) in zip(pairs, pairs[1:]):
-                triplets.append((l0.numpy(), d0.numpy(), l1.numpy()))
+                triplets.append((l0.cpu().numpy(), d0.cpu().numpy(), l1.cpu().numpy()))
 
         if verbose:
             print(f"  [find_batch] collected {len(triplets)}/{target} "
