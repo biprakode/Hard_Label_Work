@@ -93,6 +93,48 @@ Each `DUAL_ITERS` round emits the per-arch TARGET triplet count
 (tiniest=3000, tinier=2000, tiny=10000, full=10000). Override at the CLI:
 `./run_one_model_enhanced.sh tiny relu 50`.
 
+### Attack parameters — validated against the 2026-06-21 runs
+
+The values below are the **canonical, end-to-end attack parameters** for the
+make_blobs suite. They are hardcoded in `run_one_model_enhanced.sh` (the driver
+the 2026-06-21 batch invoked via `run_makeblobs_batch_2026-06-21.sh`) and were
+cross-checked against the per-run `extraction_metrics.json` saved under
+`paper_notes/section3/reports/2026-06-21/`. CIFAR (`full`) rows are **TBD** —
+the flagship is run separately on Kaggle; its parameters/reports will be
+filled in here after that run.
+
+| Phase | Parameter | tiniest | tinier | tiny | full (CIFAR) |
+|---|---|---|---|---|---|
+| **1 — dual search** | `DUAL_ITERS` (rounds) | 6 | 8 | 20 | _TBD_ |
+| | workers / batch | 7 / 256 | 7 / 256 | 7 / 256 | _TBD_ |
+| | implementation | torch (`parallel_duals.py --impl torch`) | ← | ← | _TBD_ |
+| | TARGET triplets / round | 3000 | 2000 | 10000 | _TBD_ |
+| **2 — sign recovery** | runner | `batched_sign_recovery.py` (float64) | ← | ← | _TBD_ |
+| **3 — reconstruction** | sign-search method | SA+margin (default); PT+margin (A/B arm) | ← | ← | _TBD_ |
+| | `--sign-restarts` | 1 | 1 | 2 | _TBD_ |
+| | `--sign-pair-lookahead` | 8 | 8 | 8 | _TBD_ |
+| | `--sign-refine-cycles` | 3 | 3 | 3 | _TBD_ |
+| | mini-refine (epochs / lr / wd) | 20 / 5e-3 / 1e-4 | ← | ← | _TBD_ |
+| | `--refine-epochs` | 300 | 500 | 500 | _TBD_ |
+| | refine optimiser | AdamW, `--refine-weight-decay 1e-4`, `--refine-cosine-lr` | ← | ← | _TBD_ |
+| | watchdog | `--early-stop --patience 5 --eval-every 10` | ← | ← | _TBD_ |
+| | eval gating | `--eval-on-test3` (held-out, seed=123) + `--train-union-test12` (queryable = X_test ∪ X_test2 = 20 K) | ← | ← | _TBD_ |
+| **activation** | `LEAKY_ALPHA` | 0.0 (ReLU) / 0.01 (Leaky) | ← | ← | _TBD_ |
+| **oracle cost** | batched `argmax` queries / model | 3 (cached; sign-search + fc5 LR fit + refinement) | ← | ← | _TBD_ |
+
+Notes:
+- The make_blobs rows are reproduced by `run_makeblobs_batch_2026-06-21.sh`
+  (ARM A = SA+margin full pipeline, ARM B = PT+margin Phase-3 re-run on ARM A's
+  on-disk artifacts). Per-run evidence: `*_sa_margin_extraction_metrics.json`
+  and `*_pt_margin_extraction_metrics.json` under the dated reports dir.
+- The legacy `run_extract.sh` sequential finder uses different round counts
+  (tiniest 9 / tinier 50 / tiny 1000) because it is the un-batched NumPy walker;
+  the `DUAL_ITERS` above are the batched-torch driver defaults and are **not**
+  interchangeable round-for-round.
+- The CIFAR `full` column is intentionally left `TBD` here; the older manual
+  CIFAR walkthrough further down (Step 3) documents a separate 2026-06-04/05
+  flagship run and is not the canonical source for these parameters.
+
 ### Running all 8 configurations
 
 ```bash
