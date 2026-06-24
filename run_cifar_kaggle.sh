@@ -74,7 +74,15 @@ DISK_CAP_GB="${DISK_CAP_GB:-54}"
 export CLUSTER_PER_NEURON_CAP="${CLUSTER_PER_NEURON_CAP:-150}"
 
 # ---------- GPU detect ----------
-HAS_GPU=$("$PY" -c "import torch; print(1 if torch.cuda.is_available() else 0)" 2>/dev/null || echo 0)
+HAS_GPU=$("$PY" -c "
+import torch
+ok=0
+if torch.cuda.is_available():
+    try:
+        x=torch.randn(8,8,dtype=torch.float64,device='cuda'); _=(x@x).sum().item(); ok=1   # real fp64 kernel launch
+    except Exception: ok=0
+print(ok)
+" 2>/dev/null || echo 0)
 if [ "$HAS_GPU" = "1" ]; then
     GPU_NAME=$("$PY" -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null)
     : "${DUAL_WORKERS:=1}"   ; : "${DUAL_BATCH:=256}"     # one CUDA context, large batch
