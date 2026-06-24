@@ -48,21 +48,22 @@ for a in "$@"; do
     esac
 done
 
-# ---------- locate repo + symlink canonical prefix ----------
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"          # .../Hard_Label_Work
-REPO_ROOT="$(cd "$HERE/../.." && pwd)"                        # repo root (contains enhanced_codebase/)
+# ---------- locate repo + symlink canonical Hard_Label_Work ----------
+# Symlink the *canonical Hard_Label_Work path* directly to the real script dir,
+# so the ~20 hardcoded absolute paths resolve regardless of where the repo was
+# cloned (e.g. /kaggle/working/Hard_Label_Work with no enhanced_codebase wrapper).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"          # real .../Hard_Label_Work, any clone location
 CANON="/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction"
-if [ "$REPO_ROOT" != "$CANON" ]; then
-    echo "[bootstrap] symlinking canonical prefix -> repo"
-    mkdir -p "$(dirname "$CANON")"
-    if [ -e "$CANON" ] && [ ! -L "$CANON" ]; then
-        echo "[bootstrap] WARNING: $CANON exists and is not a symlink; leaving as-is"
-    else
-        ln -sfn "$REPO_ROOT" "$CANON"
-    fi
-    HERE="$CANON/enhanced_codebase/Hard_Label_Work"
+CANON_HLW="$CANON/enhanced_codebase/Hard_Label_Work"
+if [ "$HERE" != "$CANON_HLW" ]; then
+    echo "[bootstrap] symlinking $CANON_HLW -> $HERE"
+    [ -L "$CANON" ] && rm -f "$CANON"                        # drop stale prefix symlink from earlier broken runs
+    mkdir -p "$CANON/enhanced_codebase" || { echo "[bootstrap] FATAL: cannot mkdir $CANON/enhanced_codebase"; exit 1; }
+    rm -rf "$CANON_HLW"                                       # clear whatever squats the canonical slot (dir or symlink)
+    ln -sfn "$HERE" "$CANON_HLW" || { echo "[bootstrap] FATAL: symlink failed"; exit 1; }
 fi
-cd "$HERE"
+cd "$HERE" || { echo "[bootstrap] FATAL: cd $HERE failed"; exit 1; }
+echo "[bootstrap] OK: HERE=$HERE  ->  $CANON_HLW"
 
 PY="${PYTHON_BIN:-python3}"
 command -v "$PY" >/dev/null 2>&1 || PY="/home/biprarshi/miniconda3/envs/MLenv/bin/python3"
@@ -95,7 +96,7 @@ else
 fi
 
 DATE="$(date +%Y-%m-%d)"
-NOTES_DIR="$(cd "$HERE/../.." && pwd)/paper_notes/section3"
+NOTES_DIR="$(cd "$HERE/.." && pwd)/paper_notes/section3"
 OUTDIR="$NOTES_DIR/reports/cifar_kaggle_${DATE}"
 mkdir -p "$OUTDIR"
 LOG="$OUTDIR/cifar_kaggle_run.log"
