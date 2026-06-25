@@ -3,6 +3,15 @@ import os
 import json
 import numpy as np
 from pathlib import Path
+# Thread-cap BEFORE sign_recovery (pulls in TF/BLAS): each Pool worker runs
+# sign_recovery.main() in-process, so without this every worker grabs all cores
+# for TF/BLAS -> N_workers * N_cores oversubscription (was ~190 threads on a
+# 12-thread box -> ~59h). Scope each worker to 1 thread; parallelism comes from
+# the Pool (nThreads workers), not from intra-op threading.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+           "TF_NUM_INTRAOP_THREADS", "TF_NUM_INTEROP_THREADS"):
+    os.environ.setdefault(_v, "1")
 import sign_recovery
 
 # ========== Global Settings ========== #
@@ -47,7 +56,7 @@ LAYERIDS                 = (1, 2, 3, 4)  # layer IDs to analyze
 analyzeWiggleSensitivity = 'True'  # Record the sensitivity to the wiggle at the target layer
 analyzeSpeed             = 'True'  # Record the rate of change of future layer neurons
 nDebug                   = 'True'  # Set to True to skip logfile
-nThreads                 = 5  # Reduced from 8 to avoid OOM on 24GB machines (was 8)
+nThreads                 = 48  # Pool workers, each single-threaded (see thread-cap above). Sized for the c2d-56 box (56 threads / 224GB); each worker loads a small Keras model — RAM is not the bound here.
 # ==================================== #
 
 

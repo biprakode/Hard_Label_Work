@@ -68,10 +68,10 @@ echo "[bootstrap] OK: HERE=$HERE  ->  $CANON_HLW"
 PY="${PYTHON_BIN:-python3}"
 command -v "$PY" >/dev/null 2>&1 || PY="/home/biprarshi/miniconda3/envs/MLenv/bin/python3"
 
-SIGN_METHOD="${SIGN_METHOD:-pt}"          # PT+margin: §2.3.11 recommends PT for the widest CIFAR-full layers
+SIGN_METHOD="${SIGN_METHOD:-sa}"          # SA+margin default: PT is intractable on full 256-wide arch; override SIGN_METHOD=pt only for small/saturated victims
 SIGN_OBJ="${SIGN_OBJ:-margin}"
-DISK_CAP_GB="${DISK_CAP_GB:-54}"
-export CLUSTER_PER_NEURON_CAP="${CLUSTER_PER_NEURON_CAP:-150}"
+DISK_CAP_GB="${DISK_CAP_GB:-180}"            # GCE: 194 GB disk, no Kaggle 54 GB throttle
+export CLUSTER_PER_NEURON_CAP="${CLUSTER_PER_NEURON_CAP:-800}"   # GCE: more samples/neuron -> more neurons recovered (biggest lever)
 
 # ---------- GPU detect ----------
 HAS_GPU=$("$PY" -c "
@@ -99,8 +99,8 @@ if [ "$SMOKE" = "1" ]; then
     REFINE_EPOCHS=20; SIGN_RESTARTS=0; SIGN_PAIR=2; SIGN_CYCLES=1
     echo "[smoke] full_relu, 1 round, target=$SMOKE_TARGET, minimal Phase-3 — plumbing test only"
 else
-    DUAL_ROUNDS="${DUAL_ROUNDS:-80}"; DUAL_CHUNK="${DUAL_CHUNK:-10}"; SMOKE_TARGET=""
-    REFINE_EPOCHS=500; SIGN_RESTARTS=4; SIGN_PAIR=8; SIGN_CYCLES=3
+    DUAL_ROUNDS="${DUAL_ROUNDS:-150}"; DUAL_CHUNK="${DUAL_CHUNK:-20}"; SMOKE_TARGET=""   # GCE: 150 rounds, cluster+trim every 20 (raw ~1.75GB/round would overflow 194GB disk in one chunk); clusters keep all duals @ cap 800
+    REFINE_EPOCHS=500; SIGN_RESTARTS=1; SIGN_PAIR=4; SIGN_CYCLES=1   # SA-tuned: PT (4/8/3) is intractable on the full 256-wide arch (10-30h); SA+1cycle ~1-2h
 fi
 
 DATE="$(date +%Y-%m-%d)"
@@ -219,7 +219,7 @@ extract_one(){       # $1 = activation
         || log "  sign recovery nonzero rc (may have partial output)"
 
     log "=== [6] Phase 3 reconstruct+refine (full, ${SIGN_METHOD}/${SIGN_OBJ}) ==="
-    "$PY" analysis/run_extraction.py --full --from-scratch --refine \
+    "$PY" -u analysis/run_extraction.py --full --from-scratch --refine \
         --refine-epochs "$REFINE_EPOCHS" --refine-weight-decay 1e-4 --refine-cosine-lr \
         --early-stop --patience 5 --eval-every 10 --eval-on-test3 --train-union-test12 \
         --sign-restarts "$SIGN_RESTARTS" --sign-pair-lookahead "$SIGN_PAIR" \
@@ -256,6 +256,16 @@ case "$WHICH" in
 esac
 
 clean_residuals   # final cleanup so nothing huge lingers in the image
+
+# ---------- bundle outputs for download (must live under /kaggle/working to persist) ----------
+cp /tmp/full_*_*.log "$OUTDIR/" 2>/dev/null || true        # diagnostic logs that otherwise vanish with /tmp
+ZIP_DIR="$(cd "$HERE/.." && pwd)"                          # /kaggle/working on Kaggle, enhanced_codebase locally
+ZIP="$ZIP_DIR/cifar_kaggle_results_${DATE}.zip"
+( cd "$(dirname "$OUTDIR")" && rm -f "$ZIP" && zip -r "$ZIP" "$(basename "$OUTDIR")" >/dev/null 2>&1 ) \
+    && log "Zipped results -> $ZIP ($(du -h "$ZIP" 2>/dev/null | cut -f1))" \
+    || log "  zip step failed (folder still available at $OUTDIR)"
+
 log ""; log "############  CIFAR EXTRACTION COMPLETE ($(date -u))  ############"
-log "Download this folder: $OUTDIR"
+log "Download this zip:    $ZIP"
+log "(or this folder:      $OUTDIR )"
 ls -1 "$OUTDIR" | tee -a "$LOG"
