@@ -109,7 +109,9 @@ case "$MODEL" in
     tinier)  FLAG='--tinier'  ;;
     tiny)    FLAG='--makeblobs' ;;
 esac
+# MetaHeuristic combinatorial sign search (SA+margin default; SIGN_METHOD=pt|greedy|tabu to override)
 $PY analysis/run_extraction.py $FLAG --from-scratch --refine --refine-epochs 1000 \
+    --sign-search-method "${SIGN_METHOD:-sa}" --sign-search-objective "${SIGN_OBJ:-margin}" \
     | tee /tmp/extract_reconstruct.log | grep -E "recovered|accuracy|agreement|EXTRACTION|Saved|refine]" | tail -40
 
 echo "=== DONE. Model saved to results/reconstructed_models/ ==="

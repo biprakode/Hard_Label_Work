@@ -173,7 +173,9 @@ case "$ARCH" in
     tinier)  ARCH_FLAG='--tinier'  ;;
     tiny)    ARCH_FLAG='--makeblobs' ;;
 esac
+# MetaHeuristic combinatorial sign search (SA+margin default; SIGN_METHOD=pt|greedy|tabu to override)
 "$PY" analysis/run_extraction.py $ARCH_FLAG --from-scratch --refine --refine-epochs 1000 \
+    --sign-search-method "${SIGN_METHOD:-sa}" --sign-search-objective "${SIGN_OBJ:-margin}" \
     > "/tmp/${TAG}_phase3.log" 2>&1
 grep -E "recovered|accuracy|agreement|EXTRACTION|Saved|refine\]" "/tmp/${TAG}_phase3.log" | tail -25 | tee -a "$LOG"
 t7=$(( $(date +%s) - t7_start ))

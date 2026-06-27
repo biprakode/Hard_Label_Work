@@ -69,10 +69,14 @@ case "$ARCH" in
     full)    SIGN_RESTARTS=4; SIGN_PAIR=8;  SIGN_CYCLES=3; REFINE_EPOCHS=500 ;;
 esac
 
-# sign_search_improve: per-layer sign optimizer. greedy (default, legacy) | tabu | sa.
-# Override via env, e.g.  SIGN_METHOD=sa SIGN_OBJ=margin ./run_one_model_enhanced.sh tiny relu
-SIGN_METHOD="${SIGN_METHOD:-greedy}"
-SIGN_OBJ="${SIGN_OBJ:-agree}"
+# MetaHeuristic / combinatorial sign search: per-layer sign optimizer.
+#   greedy (legacy) | tabu | sa (default) | pt    objective: agree | margin (default)
+# Default is the metaheuristic combinatorial search SA+margin (the canonical 2026-06-21
+# Phase-3 sign step); set SIGN_METHOD=pt for the widest/hardest layers (CIFAR full),
+# or SIGN_METHOD=greedy SIGN_OBJ=agree to reproduce legacy behaviour. See README
+# "Sign-search methods (MetaHeuristic Sign Search)".
+SIGN_METHOD="${SIGN_METHOD:-sa}"
+SIGN_OBJ="${SIGN_OBJ:-margin}"
 
 echo ""                                      | tee -a "$LOG"
 echo "=================================================="          | tee -a "$LOG"
