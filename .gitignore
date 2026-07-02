@@ -47,6 +47,11 @@ results/reports/*.md
 _relu_baseline_backup/
 signature_output/
 
+# -------------------------------------- entire results tree --
+# Everything under any results* path is attack output only; nothing is read
+# back from it by the pipeline, so ignore the whole tree wholesale.
+results*
+
 # -------------------------------------- editor / OS noise --
 .DS_Store
 *.swp

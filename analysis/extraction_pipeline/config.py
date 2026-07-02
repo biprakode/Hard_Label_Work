@@ -19,7 +19,7 @@ BASE_DIR = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhan
 
 
 # ----------------------------------------------------------- activation toggle --
-LEAKY_ALPHA = 0.0
+LEAKY_ALPHA = 0.01
 
 
 def _act(x):

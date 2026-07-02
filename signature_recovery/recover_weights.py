@@ -7,7 +7,17 @@ from collections import defaultdict
 import sys
 import numpy
 
-file = open(f"{sys.argv[1]}_weight_vectors.txt" , "w") 
+file = open(f"{sys.argv[1]}_weight_vectors.txt" , "w")
+
+# MEASUREMENT-ONLY switch. When NO_SIG_CHEAT=1 the per-neuron scaling constant /
+# matched-neuron lookup (which divides the recovered direction by the true weight
+# vector, cheat_solution) is disabled. We then keep the raw unit-norm SVD
+# direction with arbitrary sign, write metadata.json with scaling_factor=1.0 so
+# the assembly step still picks the neuron up, and drop the truth-based
+# min(errs)<1e-3 selection gate (it reads cheat_solution). This is the honest
+# baseline: no ground-truth is used to correct recovered PARAMETERS. Evaluation
+# (|cos| etc.) is computed later, downstream, and is unaffected. Default OFF.
+NO_SIG_CHEAT = os.environ.get("NO_SIG_CHEAT", "0") == "1"
 
 def intersect(left, right, nleft, nright):
     A = np.vstack((nleft, nright))
@@ -315,6 +325,34 @@ def dosteal(LAYER, cluster):
                 # Save raw (unscaled) recovered weights
                 np.savez(os.path.join(neuron_dir, "weights_unscaled.npz"), np_soln)
                 np.savetxt(os.path.join(neuron_dir, "weights_unscaled.txt"), np_soln)
+
+                if NO_SIG_CHEAT:
+                    # Honest baseline: no ground-truth scaling/matched-neuron lookup.
+                    # Keep the raw unit-norm SVD direction (arbitrary sign) as the
+                    # weight, and write metadata with scaling_factor=1.0 so the
+                    # assembly step (which requires metadata.json and divides by
+                    # abs(scaling_factor)) still loads this neuron unchanged.
+                    # matched_neuron is set to cluster_id purely for bookkeeping;
+                    # the cluster->neuron mapping already comes from the directory
+                    # name and is not derived from truth here.
+                    np.savez(os.path.join(neuron_dir, "weights.npz"), np_soln)
+                    np.savetxt(os.path.join(neuron_dir, "weights.txt"), np_soln)
+                    metadata = {
+                        'matched_neuron': int(cluster_id),
+                        'scaling_factor': 1.0,
+                        'absolute_error': None,
+                        'cluster_id': int(cluster_id),
+                        'no_signature_cheat': True,
+                    }
+                    import json
+                    with open(os.path.join(neuron_dir, "metadata.json"), 'w') as mf:
+                        json.dump(metadata, mf, indent=2)
+                    print(f"[no-sig-cheat] kept raw SVD direction for cluster {cluster_id} (scale=1.0, unit-norm)")
+                    file.write(f"\n\n[no-sig-cheat] kept raw SVD direction for cluster {cluster_id}")
+                    file.flush()
+                    del maybe, clean
+                    gc.collect()
+                    continue
 
                 # Find best matching neuron and compute scaling factor
                 errs = []

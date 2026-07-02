@@ -51,9 +51,15 @@ export PYTHON_BIN=/home/biprarshi/miniconda3/envs/MLenv/bin/python3
 ./run_one_model_enhanced.sh tiny    leakyrelu   # ~30 min
 
 # 2 CIFAR-10 flagships (3072-256-256-256-64-10, 832 hidden neurons)
-./run_one_model_enhanced.sh full    relu        # several hours, 20+ GB RAM
-./run_one_model_enhanced.sh full    leakyrelu
+# CANONICAL: the exact GCE V100 attack is run_cifar_kaggle.sh (SA+margin, retuned
+# defaults) — NOT run_one_model_enhanced.sh. Needs an fp64 GPU + ~180 GB scratch.
+bash run_cifar_kaggle.sh relu                       # relu victim (workers=1 on GPU)
+DUAL_WORKERS=3 bash run_cifar_kaggle.sh leakyrelu   # leaky victim (3 CUDA contexts)
 ```
+
+> The two CIFAR flagship rows in the [Attack-parameters table](#attack-parameters-validated-against-the-2026-06-21-make_blobs-runs)
+> are read straight from these runs' `extraction_metrics.json`; see
+> [Reproduce the canonical CIFAR attack](#reproduce-the-canonical-cifar-gce-attack).
 
 Key flags it sets internally (all overridable by env / the relevant CLI flag):
 
@@ -86,34 +92,47 @@ the CLI: `./run_one_model_enhanced.sh tiny relu 50`.
 
 ### Attack parameters (validated against the 2026-06-21 make_blobs runs)
 
-Canonical end-to-end parameters, hardcoded in `run_one_model_enhanced.sh` and
-cross-checked against the per-run `extraction_metrics.json` under
-`paper_notes/section3/reports/2026-06-21/`.
+Canonical end-to-end parameters. The make_blobs columns are hardcoded in
+`run_one_model_enhanced.sh` and cross-checked against the per-run
+`extraction_metrics.json` under `paper_notes/section3/reports/2026-06-21/`.
 
-| Phase | Parameter | tiniest | tinier | tiny | full (CIFAR) |
+**†** The **`full (CIFAR)` column is the canonical GCE V100 run** (not
+`run_one_model_enhanced.sh` — the flagship uses `run_cifar_kaggle.sh`, whose
+defaults were retuned to these values). Numbers are read back from the
+downloaded `extraction_metrics.json` of the two canonical runs:
+`paper_notes/section3/reports/cifar_gce_relu_2026-06-25/relu/relu_extraction_metrics.json`
+(cifar_relu, GCE V100, 2026-06-25) and
+`paper_notes/section3/reports/cifar_kaggle_2026-06-26/full_leakyrelu_extraction_metrics.json`
+(cifar_leakyrelu, GCE V100, 2026-06-26). Kaggle-era CIFAR runs are **not**
+canonical.
+
+| Phase | Parameter | tiniest | tinier | tiny | full (CIFAR) † |
 |---|---|---|---|---|---|
-| **1 — dual search** | `DUAL_ITERS` (rounds) | 6 | 8 | 20 | _TBD_ |
-| | workers / batch | 7 / 256 | 7 / 256 | 7 / 256 | _TBD_ |
-| | implementation | torch (`parallel_duals.py --impl torch`) | ← | ← | _TBD_ |
-| | TARGET triplets / round | 3000 | 2000 | 10000 | _TBD_ |
-| **2 — sign recovery** | runner | `batched_sign_recovery.py` (float64) | ← | ← | _TBD_ |
-| **3 — reconstruction** | sign-search method | SA+margin (default); PT+margin (A/B arm) | ← | ← | _TBD_ |
-| | `--sign-restarts` | 1 | 1 | 2 | _TBD_ |
-| | `--sign-pair-lookahead` | 8 | 8 | 8 | _TBD_ |
-| | `--sign-refine-cycles` | 3 | 3 | 3 | _TBD_ |
-| | mini-refine (epochs / lr / wd) | 20 / 5e-3 / 1e-4 | ← | ← | _TBD_ |
-| | `--refine-epochs` | 300 | 500 | 500 | _TBD_ |
-| | refine optimiser | AdamW, `--refine-weight-decay 1e-4`, `--refine-cosine-lr` | ← | ← | _TBD_ |
-| | watchdog | `--early-stop --patience 5 --eval-every 10` | ← | ← | _TBD_ |
-| | eval gating | `--eval-on-test3` + `--train-union-test12` (queryable = X_test ∪ X_test2 = 20 K) | ← | ← | _TBD_ |
-| **activation** | `LEAKY_ALPHA` | 0.0 (ReLU) / 0.01 (Leaky) | ← | ← | _TBD_ |
-| **oracle cost** | batched `argmax` queries / model | 3 (cached; sign-search + fc5 LR fit + refinement) | ← | ← | _TBD_ |
+| **1 — dual search** | `DUAL_ITERS` (rounds) | 6 | 8 | 20 | 150 (`DUAL_CHUNK=20`, cluster+trim per chunk) |
+| | workers / batch | 7 / 256 | 7 / 256 | 7 / 256 | 1 / 256 (relu) · 3 / 256 (leaky) — GPU one CUDA context |
+| | implementation | torch (`parallel_duals.py --impl torch`) | ← | ← | ← (CUDA float64, V100) |
+| | TARGET triplets / round | 3000 | 2000 | 10000 | 10000 |
+| **2 — sign recovery** | runner | `batched_sign_recovery.py` (float64) | ← | ← | ← (TF thread-capped to 1/worker) |
+| **3 — reconstruction** | sign-search method | SA+margin (default); PT+margin (A/B arm) | ← | ← | SA+margin (PT intractable on the 256-wide arch) |
+| | `--sign-restarts` | 1 | 1 | 2 | 0 (relu) / 1 (leaky) |
+| | `--sign-pair-lookahead` | 8 | 8 | 8 | 4 |
+| | `--sign-refine-cycles` | 3 | 3 | 3 | 1 |
+| | mini-refine (epochs / lr / wd) | 20 / 5e-3 / 1e-4 | ← | ← | ← |
+| | `--refine-epochs` | 300 | 500 | 500 | 500 |
+| | refine optimiser | AdamW, `--refine-weight-decay 1e-4`, `--refine-cosine-lr` | ← | ← | ← (lr 5e-3) |
+| | watchdog | `--early-stop --patience 5 --eval-every 10` | ← | ← | ← |
+| | eval gating | `--eval-on-test3` + `--train-union-test12` (queryable = X_test ∪ X_test2 = 20 K) | ← | ← | ← |
+| **activation** | `LEAKY_ALPHA` | 0.0 (ReLU) / 0.01 (Leaky) | ← | ← | ← |
+| **oracle cost** | batched `argmax` queries / model | 3 (cached; sign-search + fc5 LR fit + refinement) | ← | ← | ← |
 
 The make_blobs rows are reproduced by `run_makeblobs_batch_2026-06-21.sh`
 (ARM A = SA+margin full pipeline, ARM B = PT+margin Phase-3 re-run on ARM A's
-on-disk artifacts). The CIFAR `full` column is `TBD` until the flagship run is
-logged; the manual CIFAR walkthrough below is a separate 2026-06-04/05 run and
-is not the canonical source for these parameters.
+on-disk artifacts). The CIFAR `full` column is the **canonical GCE V100 attack**
+— fire it with `bash run_cifar_kaggle.sh relu` / `DUAL_WORKERS=3 bash
+run_cifar_kaggle.sh leakyrelu` (the live script's defaults already encode every
+`full` value above; see [Reproduce the canonical CIFAR attack](#reproduce-the-canonical-cifar-gce-attack)).
+The manual CIFAR walkthrough further below is an older 2026-06-04/05 Kaggle run
+and is **not** the canonical source for these parameters.
 
 ### What the driver does per invocation
 
@@ -208,26 +227,32 @@ sign-recovery accuracy over 8 seeds):
 
 `SA == PT` on every tier whose reconstruction is already saturated before sign
 search (watchdog no-op); PT earns its ~7× cost only where the per-layer search
-starts unsaturated (empirically `tiny_relu` and the CIFAR `full` flagship).
+starts unsaturated (empirically `tiny_relu`). On the CIFAR `full` flagship PT is
+theoretically favoured but **computationally intractable** (256-wide layers,
+10–30 h with no convergence), so the canonical attack falls back to SA+margin.
 
 **How to choose / run:**
 
 ```bash
 # default (fires automatically in every attack driver script): SA + margin
 ./run_one_model_enhanced.sh tiny leakyrelu
-SIGN_METHOD=sa SIGN_OBJ=margin DUAL_WORKERS=48 bash run_cifar_kaggle.sh leakyrelu
 
-# widest CIFAR layers — parallel tempering:
-SIGN_METHOD=pt SIGN_OBJ=margin ./run_one_model_enhanced.sh full relu
+# canonical CIFAR flagship (the exact GCE V100 attack — SA+margin, not PT):
+bash run_cifar_kaggle.sh relu                       # workers=1 on GPU
+DUAL_WORKERS=3 bash run_cifar_kaggle.sh leakyrelu   # 3 CUDA contexts on the V100
 
 # reproduce legacy greedy baseline:
 SIGN_METHOD=greedy SIGN_OBJ=agree ./run_one_model_enhanced.sh tiny relu
 ```
 
+> **PT is intractable on the CIFAR `full` 256-wide arch** (projected 10–30 h, no
+> convergence) — the canonical GCE runs use **SA+margin**, which is now the
+> `run_cifar_kaggle.sh` default. Do **not** pass `SIGN_METHOD=pt` for `full`.
+
 **Note on defaults.** `run_extraction.py`'s own argparse defaults are
 `--sign-search-method greedy --sign-search-objective agree` (the legacy A/B
 control). **All attack driver scripts** (`run_one_model_enhanced.sh`,
-`run_one_model.sh`, `run_extract.sh`, `run_from_cluster.sh`, `run_cifar_kaggle.sh`)
+`run_extract.sh`, `run_from_cluster.sh`, `run_cifar_kaggle.sh`)
 override this to **`sa`/`margin`** so the combinatorial search fires by default.
 The chosen method/objective are recorded in `extraction_metrics.json`
 (`sign_search_method`, `sign_search_objective`). Algorithm detail:
@@ -313,12 +338,41 @@ If reconstructed accuracy < 90 %:
 
 ---
 
+## Reproduce the canonical CIFAR GCE attack
+
+The two CIFAR flagship victims were extracted on a **self-managed GCE V100 VM**
+(Tesla V100-SXM2-16GB, float64), and **only those runs are canonical** — the
+`full (CIFAR)` column of the [attack-parameters table](#attack-parameters-validated-against-the-2026-06-21-make_blobs-runs)
+is read back from their `extraction_metrics.json`. The live `run_cifar_kaggle.sh`
+already bakes in every canonical value (SA+margin, `DUAL_ROUNDS=150`,
+`DUAL_CHUNK=20`, `DISK_CAP_GB=180`, `--sign-restarts 1 --sign-pair-lookahead 4
+--sign-refine-cycles 1 --refine-epochs 500`), so the reviewer fires the exact
+attack with a single command per victim:
+
+```bash
+cd enhanced_codebase/Hard_Label_Work
+export PYTHON_BIN=/home/biprarshi/miniconda3/envs/MLenv/bin/python3
+
+bash run_cifar_kaggle.sh relu                       # cifar_relu  (GPU workers=1)
+DUAL_WORKERS=3 bash run_cifar_kaggle.sh leakyrelu   # cifar_leakyrelu (3 CUDA contexts)
+```
+
+Requires an **fp64-capable GPU** (V100 ideal; T4/L4/P100 are 1/32 fp64 and will
+crawl) and **~180 GB scratch**. Each run writes `full_<act>_extraction_metrics.json`,
+`full_<act>_true_vs_extracted.{md,json}`, and `full_<act>_eval_scorecard.md` under
+`paper_notes/section3/reports/cifar_kaggle_<date>/`. Canonical result artifacts:
+`cifar_gce_relu_2026-06-25/` and `cifar_kaggle_2026-06-26/`. Headline recovery:
+cifar_relu **499/832** (fc3/fc4 SVD-saturated to 0), cifar_leakyrelu **807/832**
+(fc3 243/256, fc4 58/64). Full VM build/babysit/teardown playbook:
+`enhanced_codebase/kaggle_cifar/GCE_VM_RESUME.md` + `CIFAR_RELU_RESUME.md`.
+
 ## CIFAR-10 flagship walkthrough (ReLU)
 
 The **headline model**: the MLP `3072 → 256 → 256 → 256 → 64 → 10` on raw CIFAR-10
 pixels, ReLU, float64. `run_extract.sh` does not handle it, so this is the
-authoritative manual end-to-end recipe. (For the automated path, use
-`./run_one_model_enhanced.sh full relu` or `bash run_cifar_kaggle.sh relu`.)
+authoritative manual end-to-end recipe. (For the **canonical automated path**, use
+`bash run_cifar_kaggle.sh relu` — see [Reproduce the canonical CIFAR attack](#reproduce-the-canonical-cifar-gce-attack)
+above.)
 
 ### Hardware budget
 
@@ -651,25 +705,24 @@ Drop-in replacement for the Phase-1 bottleneck (`find_duals.py`): B independent
 boundary walks in lockstep + W parallel workers, **no algorithm changes**, same
 triplet pickle format. (How it works: [EXPLANATIONS.md](EXPLANATIONS.md#how-the-batched-dual-search-works).)
 
-### Usage (drop-in for `run_extract.sh` / `run_one_model.sh` STEP 2)
+### Usage (drop-in for `run_extract.sh` STEP 2)
 
 ```bash
 cd enhanced_codebase/Hard_Label_Work
 # arch/activation come from utils.py toggles (set them first)
-./run_duals_torch.sh <ITERS> <WORKERS> <BATCH> <IMPL>
+./run_duals_torch.sh <ITERS> <WORKERS> <BATCH>
 #   ITERS    pickle rounds (≈ find_duals.py invocations)
 #   WORKERS  concurrent processes        (default cores/2)
 #   BATCH    walks per batch, torch impl  (default 256)
-#   IMPL     torch | subprocess           (default torch)
 
-# tiniest:  ./run_duals_torch.sh 9   8 256 torch     # ~6 s
-# tiny:     ./run_duals_torch.sh 500 8 256 torch     # ~24 min (was ~18 h)
+# tiniest:  ./run_duals_torch.sh 9   8 256     # ~6 s
+# tiny:     ./run_duals_torch.sh 500 8 256     # ~24 min (was ~18 h)
 ```
 
 Then continue with `cluster_dual_points_stream.py → generate_dual_neuron.py →
 recover_weights.py {0..3} → batched_sign_recovery.py → run_extraction.py`.
-`--impl subprocess` runs the original `find_duals.py` in parallel processes
-(zero-change baseline); `--impl torch` (default) uses the batched finder.
+The batched torch finder (`parallel_duals.py --impl torch`) is the only
+supported dual search.
 
 ### Validated results
 
@@ -685,7 +738,7 @@ recover_weights.py {0..3} → batched_sign_recovery.py → run_extraction.py`.
 
 ## Results
 
-### Full 6-model end-to-end (2026-05-21, via `run_one_model.sh`)
+### Full 6-model end-to-end (2026-05-21, sequential NumPy dual search)
 
 | Model | Phase-1 recovered | mean \|cos\| | sign acc | X_test2 acc | agreement | wall time |
 |---|---|---|---|---|---|---|
@@ -715,7 +768,6 @@ recover_weights.py {0..3} → batched_sign_recovery.py → run_extraction.py`.
 | `run_cifar_kaggle.sh <act>` | CIFAR `full` monolithic driver (disk-chunked duals, SA phase-3); env: `SIGN_METHOD`, `DUAL_WORKERS`, `DUAL_CHUNK`. |
 | `run_extract.sh <arch> <iters>` | Lighter make_blobs one-shot (sequential or torch duals). |
 | `run_from_cluster.sh <arch> <act>` | Resume from cluster onward (skips clean + find_duals; reuses `signature_recovery/exp/1/`). |
-| `run_one_model.sh <arch> <act>` | Legacy driver (sequential duals, no restarts/pair-flip/watchdog). Prefer `_enhanced`. |
 | `run_distillation_baseline.sh` | No-signature distillation baseline for the two-arm comparison. |
 
 ```bash

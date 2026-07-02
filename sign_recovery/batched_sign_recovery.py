@@ -15,7 +15,7 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 import sign_recovery
 
 # ========== Global Settings ========== #
-MAKEBLOBS = False  # Use make_blobs synthetic dataset instead of CIFAR-10
+MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
 TINIEST = False  # Use tiniest 8-8-8-8-8-8 model
 TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
 FULL = True  # Full flagship CIFAR-10 (3072->256->256->256->64->10)
@@ -23,7 +23,7 @@ FULL = True  # Full flagship CIFAR-10 (3072->256->256->256->64->10)
 # Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
 #   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved)
 #   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha) — selects *_leakyrelu.keras model
-LEAKY_ALPHA = 0.0
+LEAKY_ALPHA = 0.01
 sign_recovery.LEAKY_ALPHA = LEAKY_ALPHA  # propagate to sign_recovery activation forwards
 _act_suffix              = "leakyrelu" if LEAKY_ALPHA > 0 else "relu"
 _TINY_STUFF              = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/tiny_stuff"

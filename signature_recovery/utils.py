@@ -18,9 +18,9 @@ USE_GRADIENT = True
 
 LAYERS = 5
 TINIEST = False  # Use tiniest 8-8-8-8-8-8 model (input 8, 4 hidden of 8, output 8)
-TINY = False
+TINY = True
 TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
-MAKEBLOBS = False  # Use make_blobs synthetic dataset instead of CIFAR-10
+MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
 # => full flagship CIFAR-10: LAYER_SIZES = [3072, 256, 256, 256, 64, 10]
 
 # Activation toggle.
@@ -30,7 +30,7 @@ MAKEBLOBS = False  # Use make_blobs synthetic dataset instead of CIFAR-10
 # across signature_recovery, sign_recovery, and analysis/extraction_pipeline
 # (Phase-3 reconstruction — formerly the monolithic analysis/test_extraction4.py,
 # now a modular package; the legacy file is preserved as a re-export shim).
-LEAKY_ALPHA = 0.0
+LEAKY_ALPHA = 0.01
 
 
 def act(x):
