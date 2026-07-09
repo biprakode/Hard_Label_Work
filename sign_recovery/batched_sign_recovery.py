@@ -16,7 +16,7 @@ import sign_recovery
 
 # ========== Global Settings ========== #
 MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
-TINIEST = False  # Use tiniest 8-8-8-8-8-8 model
+TINIEST = True  # Use tiniest 8-8-8-8-8-8 model
 TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
 FULL = True  # Full flagship CIFAR-10 (3072->256->256->256->64->10)
 
@@ -56,7 +56,7 @@ LAYERIDS                 = (1, 2, 3, 4)  # layer IDs to analyze
 analyzeWiggleSensitivity = 'True'  # Record the sensitivity to the wiggle at the target layer
 analyzeSpeed             = 'True'  # Record the rate of change of future layer neurons
 nDebug                   = 'True'  # Set to True to skip logfile
-nThreads                 = 48  # Pool workers, each single-threaded (see thread-cap above). Sized for the c2d-56 box (56 threads / 224GB); each worker loads a small Keras model — RAM is not the bound here.
+nThreads                 =  6  # Pool workers, each single-threaded (see thread-cap above). Sized for the c2d-56 box (56 threads / 224GB); each worker loads a small Keras model — RAM is not the bound here.
 # ==================================== #
 
 
@@ -164,6 +164,40 @@ def main():
             continue
 
         NEURONIDS = range(num_neurons_in_layer)
+        if os.environ.get("HONEST_SIGN_WALK", "0") == "1":
+            # Skip neurons Phase 1 didn't recover (no metadata.json -> Kaiming-
+            # random fallback direction, see weight_assembly.load_unsigned_weights).
+            # Walking a decision boundary defined by a random, signal-free
+            # direction is not meaningful sign recovery and was the dominant
+            # source of degenerate (near-zero-norm normal, NaN-producing) walk
+            # geometry seen during this study's smoke testing -- filtering
+            # matches how every other stage of this pipeline already treats
+            # unrecovered neurons (skipped / marked unknown), not a new cheat.
+            _sig_layer_dir = (
+                "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/"
+                f"enhanced_codebase/Hard_Label_Work/signature_recovery/outputs/"
+                f"model_weights/Vrelu/layer_{layerID - 1}"
+            )
+            # neuron_X directory names are GLOBAL flat indices (e.g. layer 1 of
+            # tiniest spans neuron_8..neuron_15), not the per-layer 0..N-1
+            # indices NEURONIDS uses -- subtract this layer's offset, same as
+            # weight_assembly.load_unsigned_weights's layer_offset handling.
+            _layer_offset = sum(LAYER_NEURON_COUNTS.get(l, 0) for l in range(1, layerID))
+            _recovered = set()
+            if os.path.isdir(_sig_layer_dir):
+                for _nd in os.listdir(_sig_layer_dir):
+                    if os.path.exists(os.path.join(_sig_layer_dir, _nd, "metadata.json")):
+                        try:
+                            _raw_id = int(_nd.split("_")[1])
+                            _local_id = _raw_id - _layer_offset if _raw_id >= num_neurons_in_layer else _raw_id
+                            _recovered.add(_local_id)
+                        except (IndexError, ValueError):
+                            pass
+            _before = list(NEURONIDS)
+            NEURONIDS = [n for n in _before if n in _recovered]
+            print(f"  HONEST_SIGN_WALK: {len(NEURONIDS)}/{len(_before)} neurons "
+                  f"have a recovered Phase-1 direction; skipping the rest "
+                  f"(unrecovered/Kaiming-fallback neurons have no sign to walk for)")
 
         # Parameter adjustments for each layer.
         # IMPORTANT: `perfect_control_along_decision_boundary` caps dOFF at 3*dON
@@ -193,6 +227,22 @@ def main():
         else:
             print(f"Warning: Skipping layer {layerID} (not configured)")
             continue
+
+        # Resource-only cap (not a method change), same rationale/pattern as
+        # ablation_tiny/run_ablation.sh's SIGN_NTHREADS and this study's other
+        # CLUSTER_SLOW_MAX_* knobs. HONEST_SIGN_WALK's substituted weights
+        # produce a higher per-experiment exclusion rate for some neurons than
+        # the true weights this nExp/nExpMin pair was tuned against (see the
+        # "stalled tiniest at layer-2 neuron-7" note above -- same failure
+        # mode, different trigger). Default unset preserves the values above
+        # exactly; the cheating_ablation sweep sets SIGN_NEXP_CAP lower for
+        # the honest arm only.
+        _cap = os.environ.get("SIGN_NEXP_CAP")
+        if _cap:
+            _cap = int(_cap)
+            if nExp > _cap:
+                nExpMin = min(nExpMin, _cap // 10)
+                nExp = _cap
 
         # Build argument strings for each neuron
         args_list = []
@@ -226,9 +276,18 @@ def main():
         if nThreads > 1:
             # Parallel execution
             async_results = [pool.apply_async(run_single_neuron, (args,)) for args in args_list]
+            # Resource-only cap (not a method change): default preserves the
+            # original 1-hour-per-neuron timeout exactly. HONEST_SIGN_WALK's
+            # substituted weights can put an individual neuron's inner walk
+            # (a per-experiment bottleneck, not gated by nExp/SIGN_NEXP_CAP)
+            # into a very slow-converging state observed during this study's
+            # smoke testing; a much shorter per-neuron timeout bounds the
+            # sweep's total wall-clock at the cost of marking that one neuron
+            # unknown ('?') rather than waiting arbitrarily long for it.
+            _neuron_timeout = int(os.environ.get("SIGN_NEURON_TIMEOUT", "3600"))
             for async_result in async_results:
                 try:
-                    result = async_result.get(timeout=3600)  # 1 hour timeout per neuron
+                    result = async_result.get(timeout=_neuron_timeout)
                     layer_results.append(result)
                 except Exception as e:
                     print(f"Error getting result: {e}")

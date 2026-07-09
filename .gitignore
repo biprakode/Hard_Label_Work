@@ -58,3 +58,14 @@ results*
 *.swo
 .vscode/
 .idea/
+
+# -------------------------------------- cheating_ablation study output --
+# Only REPRODUCE.md, the top-level sweep scripts, and scripts/ are meant to
+# be tracked (see cheating_ablation/REPRODUCE.md). Everything the sweep
+# scripts generate/regenerate -- per-cheat write-ups, raw artifacts, logs,
+# and the consolidated status table -- is extracted into a separate archive
+# instead of git, both because it's several GB of regenerable output and to
+# keep this folder's git history to the reviewer-facing guide only.
+cheating_ablation/reports/
+cheating_ablation/cheat_disable_map.md
+cheating_ablation/.obsidian/

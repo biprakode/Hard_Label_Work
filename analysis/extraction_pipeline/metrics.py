@@ -73,6 +73,40 @@ def compute_weight_metrics_v2(extracted_weights, true_weights):
     }
 
 
+def compute_output_layer_metrics(ext_W, ext_b, true_W, true_b):
+    """
+    Gauge-invariant comparison of a recovered output layer (fc5) against truth.
+
+    The output layer is only determined up to  A_i -> s (A_i + w0), b_i -> s
+    (b_i + b0)  (add a shared affine row: additive gauge; positive scale s).
+    Raw parameter equality is therefore meaningless. We canonicalise both the
+    recovered and true [W|b] into the same gauge before comparing:
+      1. augment  M = [W | b]   (rows = classes, cols = d_r + 1)
+      2. row-mean-centre across the class axis (subtract the mean class row)
+         -> kills the shared-affine-row gauge (w0, b0)
+      3. Frobenius-normalise                    -> kills the positive scale s
+    Then reuse `compute_weight_metrics_v2` per-class to report last-layer sign
+    accuracy and |cos|. Classes are aligned by oracle argmax id on both sides,
+    so there is no output-permutation ambiguity (unlike hidden neurons).
+    """
+    if ext_W is None or true_W is None:
+        return None
+    ext = np.hstack([np.asarray(ext_W, dtype=np.float64),
+                     np.asarray(ext_b, dtype=np.float64).reshape(-1, 1)])
+    tru = np.hstack([np.asarray(true_W, dtype=np.float64),
+                     np.asarray(true_b, dtype=np.float64).reshape(-1, 1)])
+    if ext.shape != tru.shape:
+        print(f"Shape mismatch (fc5): extracted {ext.shape} vs true {tru.shape}")
+        return None
+
+    def _canon(m):
+        m = m - m.mean(axis=0, keepdims=True)     # kill shared-affine-row gauge
+        fro = np.linalg.norm(m)
+        return m / fro if fro > 1e-12 else m       # kill positive-scale gauge
+
+    return compute_weight_metrics_v2(_canon(ext), _canon(tru))
+
+
 def test_model_accuracy(model, X_test, Y_test, model_name="Model"):
     """Top-1 accuracy on a (X_test, Y_test) tensor pair."""
     model.eval()

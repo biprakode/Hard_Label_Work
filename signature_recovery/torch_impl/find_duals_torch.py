@@ -80,6 +80,19 @@ _STEP_VALS = torch.tensor(10.0 ** np.arange(-5, 5, 0.1), dtype=torch.float64, de
 # refine() fallback step list — identical to refine_to_decision_boundary().
 _REFINE_FALLBACK_STEPS = [1e6, 2e6, 5e6, 1e5, 2e5, 5e5, 1e4, 2e4, 5e4, 1e3, 2e3, 5e3, 1e2]
 
+# Cheating-ablation switch (default off = current behavior, byte-identical).
+# ON: _is_on_boundary uses only oracle labels (bmodel), never the true logit
+# margin gapt. Radii for the two call sites mirror find_duals.py's original
+# is_on_decision_boundary(point, delta) usage (step sweep delta=1e-5, binary
+# search delta=1e-9) so the honest predicate probes at a comparable scale.
+HONEST_BOUNDARY_DETECT = os.environ.get("HONEST_BOUNDARY_DETECT", "0") == "1"
+
+# ON: skip the Newton step entirely (uses true gapt's finite-difference
+# derivative) and fall straight into the random-direction-probe + bisection
+# fallback below, which already exists and is already exercised today for
+# lanes where Newton fails to converge — this just makes it the only path.
+HONEST_BOUNDARY_REFINE = os.environ.get("HONEST_BOUNDARY_REFINE", "0") == "1"
+
 
 def _t(arr):
     """numpy/array -> float64 tensor on DEVICE (replaces torch.from_numpy)."""
@@ -97,8 +110,16 @@ def _gap(X):
         return gapt(X, grad=False)
 
 
-def _is_on_boundary(X):
-    """Vectorised is_on_decision_boundary_cheat: |gap| < 1e-10. -> bool (B,)."""
+def _is_on_boundary(X, radius=1e-5):
+    """Vectorised is_on_decision_boundary[_cheat].
+    Cheat (default): |gap| < 1e-10, reads the true pre-softmax margin.
+    Honest (HONEST_BOUNDARY_DETECT=1): label-agreement test bmodel(X+r) ==
+    bmodel(X-r) for a random offset r of the given radius, mirroring
+    find_duals.py's original oracle-only is_on_decision_boundary(point, delta).
+    """
+    if HONEST_BOUNDARY_DETECT:
+        r = _t(np.random.normal(size=X.shape)) * radius
+        return _bmodel(X + r) != _bmodel(X - r)
     return _gap(X).abs() < 1e-10
 
 
@@ -187,21 +208,24 @@ def _refine_batch(a_bit_past):
     x = a_bit_past.clone()
     h = 1e-6
     tol = 1e-13
-    y = _gap(x)
-    converged = y.abs() < tol
-    for _ in range(10):
-        if converged.all():
-            break
-        dydx = (y - _gap(x - h)) / h          # directional deriv along all-ones, per lane
-        # dy/dx == 0 would have triggered the real-fallback in the original; treat
-        # as not-yet-converged and let the random fallback below handle it.
-        safe = dydx != 0
-        step = torch.where(safe, y / dydx, torch.zeros_like(y))
-        x_new = x - step.unsqueeze(1)
-        upd = (~converged) & safe
-        x = torch.where(upd.unsqueeze(1), x_new, x)
+    if HONEST_BOUNDARY_REFINE:
+        converged = torch.zeros(B, dtype=torch.bool, device=DEVICE)
+    else:
         y = _gap(x)
-        converged = converged | (y.abs() < tol)
+        converged = y.abs() < tol
+        for _ in range(10):
+            if converged.all():
+                break
+            dydx = (y - _gap(x - h)) / h          # directional deriv along all-ones, per lane
+            # dy/dx == 0 would have triggered the real-fallback in the original; treat
+            # as not-yet-converged and let the random fallback below handle it.
+            safe = dydx != 0
+            step = torch.where(safe, y / dydx, torch.zeros_like(y))
+            x_new = x - step.unsqueeze(1)
+            upd = (~converged) & safe
+            x = torch.where(upd.unsqueeze(1), x_new, x)
+            y = _gap(x)
+            converged = converged | (y.abs() < tol)
 
     ok = converged.clone()
     # Fallback for lanes Newton did not converge: probe random directions at
@@ -283,7 +307,7 @@ def find_batch(target=TARGET, batch_size=256, max_outer=2000, verbose=True):
             for sv in _STEP_VALS:
                 if broke.all():
                     break
-                on = _is_on_boundary(boundary + step_dir * sv)
+                on = _is_on_boundary(boundary + step_dir * sv, radius=1e-5)
                 prev = torch.where((~broke) & on, sv, prev)
                 newbroke = (~broke) & (~on)
                 step_at = torch.where(newbroke, sv, step_at)
@@ -309,7 +333,7 @@ def find_batch(target=TARGET, batch_size=256, max_outer=2000, verbose=True):
                 if not need.any():
                     break
                 m = (lower + upper) / 2
-                on = _is_on_boundary(boundary + step_dir * m.unsqueeze(1))
+                on = _is_on_boundary(boundary + step_dir * m.unsqueeze(1), radius=1e-9)
                 lower = torch.where(need & on, m, lower)
                 upper = torch.where(need & (~on), m, upper)
                 mid_step = torch.where(need, m, mid_step)

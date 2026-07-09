@@ -168,11 +168,28 @@ t2=$((t2_end - t2_start))
 echo "  duration: ${t2}s" | tee -a "$LOG"
 
 # ---------- STEP 3 — cluster ----------
-echo "=== [3] cluster_dual_points_stream.py ===" | tee -a "$LOG"
-t3_start=$(date +%s)
-"$PY" cluster_dual_points_stream.py 2>&1 | tail -10 | tee -a "$LOG"
-t3=$(( $(date +%s) - t3_start ))
-echo "  duration: ${t3}s" | tee -a "$LOG"
+# cheating_ablation study: HONEST_CLUSTER=1 swaps the always-true-activation-
+# reading streaming clusterer for cluster_dual_points.py's cluster_slow (SVD
+# rank-based consistency test, no true-activation read for the clustering
+# DECISION itself -- see cheating_ablation/ for the documented caveat that its
+# linearization prefix still depends on true weights, same as the locked
+# prefix-init cheat). Default off; canonical runs are unaffected.
+if [ "${HONEST_CLUSTER:-0}" = "1" ]; then
+    echo "=== [3] cluster_dual_points.py <L> slow (HONEST_CLUSTER=1) ===" | tee -a "$LOG"
+    t3_start=$(date +%s)
+    for L in 0 1 2 3; do
+        "$PY" cluster_dual_points.py "$L" slow > "/tmp/${TAG}_cluster_${L}.log" 2>&1
+        tail -3 "/tmp/${TAG}_cluster_${L}.log" | tee -a "$LOG"
+    done
+    t3=$(( $(date +%s) - t3_start ))
+    echo "  duration: ${t3}s" | tee -a "$LOG"
+else
+    echo "=== [3] cluster_dual_points_stream.py ===" | tee -a "$LOG"
+    t3_start=$(date +%s)
+    "$PY" cluster_dual_points_stream.py 2>&1 | tail -10 | tee -a "$LOG"
+    t3=$(( $(date +%s) - t3_start ))
+    echo "  duration: ${t3}s" | tee -a "$LOG"
+fi
 
 # ---------- STEP 4 — generate per-neuron dual files ----------
 echo "=== [4] generate_dual_neuron.py ===" | tee -a "$LOG"
@@ -197,11 +214,37 @@ echo "  duration: ${t5}s" | tee -a "$LOG"
 echo "=== [6] batched_sign_recovery.py ===" | tee -a "$LOG"
 t6_start=$(date +%s)
 cd "$HERE"
-"$PY" sign_recovery/batched_sign_recovery.py > "/tmp/${TAG}_sign.log" 2>&1 || \
-    echo "  WARNING: sign recovery exited with non-zero (may have partial output)" | tee -a "$LOG"
+# Resource-only wall-clock cap (not a method change): default "0" (unset ->
+# no timeout wrapper) preserves current behavior exactly. Set STEP6_TIMEOUT
+# (seconds) to bound the whole sign-recovery step -- SIGN_NEURON_TIMEOUT
+# individually bounds AsyncResult.get() per neuron but a runaway worker keeps
+# running until pool.join() at the end, which still blocks; this outer cap
+# is the actual backstop cheating_ablation's HONEST_SIGN_WALK sweep needs.
+if [ "${STEP6_TIMEOUT:-0}" != "0" ]; then
+    timeout --kill-after=10 -s TERM "${STEP6_TIMEOUT}" "$PY" sign_recovery/batched_sign_recovery.py > "/tmp/${TAG}_sign.log" 2>&1 || \
+        echo "  WARNING: sign recovery exited non-zero or timed out after ${STEP6_TIMEOUT}s (may have partial output)" | tee -a "$LOG"
+    # `timeout` only signals its direct child; multiprocessing.Pool workers
+    # (separate PIDs) can survive it -- clean up any stragglers so they don't
+    # keep burning CPU/RAM into the next victim's run (this study hit exactly
+    # this leak pattern from manual kills earlier; same fix, applied here so
+    # the automated sweep doesn't reproduce it).
+    pkill -9 -f "sign_recovery/batched_sign_recovery.py" 2>/dev/null || true
+else
+    "$PY" sign_recovery/batched_sign_recovery.py > "/tmp/${TAG}_sign.log" 2>&1 || \
+        echo "  WARNING: sign recovery exited with non-zero (may have partial output)" | tee -a "$LOG"
+fi
 tail -10 "/tmp/${TAG}_sign.log" | tee -a "$LOG" || true
 t6=$(( $(date +%s) - t6_start ))
 echo "  duration: ${t6}s" | tee -a "$LOG"
+
+# cheating_ablation study: Phase 3 (oracle sign search, LR fc5 fit, refinement)
+# is out of scope there — this lets its driver stop right after Phase 1+2
+# on-disk artifacts are written, skipping the (expensive, unneeded) rest.
+# Default off; canonical runs are unaffected.
+if [ "${STOP_AFTER_PHASE2:-0}" = "1" ]; then
+    echo "=== STOP_AFTER_PHASE2=1: skipping STEP 7-9 (Phase 3 + reports) ===" | tee -a "$LOG"
+    exit 0
+fi
 
 # ---------- STEP 7 — Phase 3 reconstruct + refine (enhanced CIFAR methodology) ----------
 echo "=== [7] Phase 3 enhanced (--eval-on-test3 --train-union-test12 + Fix B/C) ===" | tee -a "$LOG"

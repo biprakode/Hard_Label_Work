@@ -10,6 +10,13 @@ Polish the reconstructed model against oracle hard labels:
     * with `freeze_recovered_weights=False`, all params train (full
       distillation, drifts furthest from "extraction" but pushes accuracy
       closer to 100%).
+    * with `freeze_fc5=True`, the output layer fc5 (weight AND bias) is also
+      frozen — its gradients are zeroed every step. Use this when fc5 was
+      recovered *cryptanalytically* to full rank (an EXACT extraction, up to
+      the softmax gauge): the default refinement re-distils fc5 against the
+      imperfect penultimate features and ERODES that exact recovery (observed
+      |cos| 1.0 → ~0.4). Freezing fc5 preserves the cryptanalytic output-layer
+      extraction through the ML refine of the hidden layers.
 
 Fix B (overfit-prevention knobs, all default-off):
     * `X_eval`: optional held-out tensor — agreement is measured on it every
@@ -34,7 +41,8 @@ def oracle_label_refinement(reconstructed_model, oracle_model, X_train,
                              # ----- Fix B additions -----
                              X_eval=None, eval_every=10, patience=5,
                              early_stop=False, weight_decay=0.0,
-                             use_cosine_lr=False, eval_sample=1024):
+                             use_cosine_lr=False, eval_sample=1024,
+                             freeze_fc5=False):
     """Train against oracle(X_train).argmax for up to n_epochs.
 
     Args:
@@ -100,9 +108,10 @@ def oracle_label_refinement(reconstructed_model, oracle_model, X_train,
         watch_tag = (f", watchdog on X_eval[:{eval_sample}] start={start_watch:.4f}"
                      if use_watchdog else "")
         es_tag = f", early_stop(patience={patience}, every={eval_every})" if (use_watchdog and early_stop) else ""
+        fc5_tag = ", fc5 FROZEN (crypto extraction preserved)" if freeze_fc5 else ""
         print(f"  [refine] start agreement={start_agree:.4f}, "
               f"{'frozen recovered weights' if freeze_recovered_weights else 'all params trainable'}, "
-              f"n_epochs={n_epochs}, lr={lr}, {opt_tag}{sched_tag}{watch_tag}{es_tag}")
+              f"n_epochs={n_epochs}, lr={lr}, {opt_tag}{sched_tag}{watch_tag}{es_tag}{fc5_tag}")
 
     for epoch in range(n_epochs):
         optimizer.zero_grad()
@@ -115,6 +124,15 @@ def oracle_label_refinement(reconstructed_model, oracle_model, X_train,
                 row_mask = freeze_row_masks.get(lid)
                 if row_mask is not None and layer.weight.grad is not None:
                     layer.weight.grad[row_mask] = 0.0
+
+        if freeze_fc5:
+            # Freeze the cryptanalytically-recovered output layer entirely
+            # (all rows + bias), so refinement of the hidden layers cannot
+            # erode the exact fc5 extraction.
+            if reconstructed_model.fc5.weight.grad is not None:
+                reconstructed_model.fc5.weight.grad.zero_()
+            if reconstructed_model.fc5.bias.grad is not None:
+                reconstructed_model.fc5.bias.grad.zero_()
 
         optimizer.step()
         if scheduler is not None:
@@ -169,6 +187,7 @@ def oracle_label_refinement(reconstructed_model, oracle_model, X_train,
         'start_agreement': float(start_agree),
         'final_agreement': float(final_agree),
         'freeze_recovered_weights': bool(freeze_recovered_weights),
+        'freeze_fc5': bool(freeze_fc5),
         'n_epochs': int(n_epochs),
         'stopped_epoch': int(stopped_epoch),
         'lr': float(lr),

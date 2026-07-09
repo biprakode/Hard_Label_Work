@@ -14,6 +14,21 @@ internals, Phase-3 module layout, caveats) see **[EXPLANATIONS.md](EXPLANATIONS.
 
 ---
 
+## Cheating ablation study (read this first if you're reviewing)
+
+Phase 1 (signature recovery) and Phase 2 (statistical sign recovery) each
+contain a handful of points that read the true victim model's weights,
+biases, or activations directly, instead of relying purely on hard-label
+oracle queries — necessary engineering shortcuts for tractable experimentation,
+documented and individually ablated (ON = cheat active / OFF = honest
+hard-label-only replacement) across six `make_blobs` victims.
+
+➡ **[cheating_ablation/REPRODUCE.md](cheating_ablation/REPRODUCE.md)** is the
+single entry point: what each cheat is, why it exists, exact reproduction
+commands, and where the measured impact of removing each one is written up.
+
+---
+
 ## Prereqs
 
 - Python 3.11+, env with `torch`, `tensorflow`/`keras`, `numpy`, `scipy`,

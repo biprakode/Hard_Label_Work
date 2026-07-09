@@ -28,10 +28,11 @@ from .config import (
 )
 from .architectures import TinyModel, TinierModel, TiniestModel, FullModel
 from .data_loading import load_test_data, load_test2_data, load_test3_data, load_ground_truth_model
-from .metrics import compute_weight_metrics_v2, test_model_accuracy
+from .metrics import compute_weight_metrics_v2, compute_output_layer_metrics, test_model_accuracy
 from .weight_assembly import reconstruct_model, save_reconstructed_model
 from .bias_recovery import recover_biases_from_duals
 from .output_layer_recovery import recover_output_layer
+from .output_layer_crypto import recover_output_layer_cryptanalytic
 from .sign_search import (
     oracle_sign_search,
     greedy_oracle_sign_search_with_restarts,
@@ -86,12 +87,44 @@ def build_parser():
                         help="After reconstruction, brute-force sign combos per layer using only hard-label oracle queries on X_test")
     parser.add_argument('--from-scratch', action='store_true',
                         help="Rebuild model from scratch: no cheat biases, no cheat fc5. Implies --sign-search with joint w+b flipping, plus fc5 LR-fit on oracle labels")
+    parser.add_argument('--fc5-method', choices=['lr', 'cryptanalytic'], default='lr',
+                        help="Output-layer (fc5) recovery for the FINAL fit under "
+                             "--from-scratch. 'lr' (default) fits multinomial logistic "
+                             "regression on oracle argmax labels (distillation). "
+                             "'cryptanalytic' SOLVES fc5 from class-tie transition-point "
+                             "equations (ePrint 2025/1118, Sec 3). The provisional "
+                             "pre-sign-search fit always stays LR.")
+    parser.add_argument('--fc5-budget-mult', type=int, default=50,
+                        help="cryptanalytic fc5: transition-point query-budget cap = "
+                             "this multiple of the rank target d_{r+1}(d_r+1)-(d_r+2)")
+    parser.add_argument('--fc5-input-range', type=float, default=1.0,
+                        help="cryptanalytic fc5: half-width of uniform input sampling "
+                             "for the transition-point search (blobs inputs ~[-1,1])")
+    parser.add_argument('--fc5-crypto-no-cheat', action='store_true',
+                        help="Ablation: disable the drop-in true-prefix cheat used by "
+                             "the cryptanalytic fc5 solve. By default the solve computes "
+                             "h4 on the TRUE fc1..fc4 (then re-instates the imperfect "
+                             "recovered layers, keeping only fc5) — the same per-layer "
+                             "prefix cheat recover_weights.py uses (cheating_audit.md). "
+                             "With this flag h4 comes from the imperfect recovered "
+                             "layers, so crypto fc5 cannot match the victim.")
+    parser.add_argument('--skip-sign-search', action='store_true',
+                        help="Run --from-scratch WITHOUT the sign search (and its "
+                             "provisional fc5 fit). Used for the Stage-1 'algebraic' "
+                             "snapshot = signature + bias recovery + fc5 only, before "
+                             "the ML stage (SA sign search + refine).")
     parser.add_argument('--duals-dir', type=str, default=DUAL_POINTS_DIR,
                         help="Directory holding layer{L}_neuron{i}.npy dual point files")
     parser.add_argument('--refine', action='store_true',
                         help="After sign search + fc5 LR fit, polish the model against oracle hard labels. Freezes extracted weight rows; only biases, fc5, and unrecovered neurons' rows are updated")
     parser.add_argument('--refine-unfreeze', action='store_true',
                         help="When combined with --refine, unfreeze ALL weights (full distillation). Strays furthest from 'extraction' but pushes accuracy closer to 100%%")
+    parser.add_argument('--refine-freeze-fc5', choices=['auto', 'on', 'off'], default='auto',
+                        help="Freeze the output layer fc5 (weight+bias) during --refine so gradient "
+                             "distillation cannot erode an exact cryptanalytic fc5. "
+                             "'auto' (default): freeze ONLY when --fc5-method cryptanalytic reached "
+                             "FULL RANK (an exact extraction). 'on': always freeze fc5. 'off': never "
+                             "freeze (legacy behaviour; reproduces canonical 21/5 LR pipeline).")
     parser.add_argument('--refine-epochs', type=int, default=300)
     parser.add_argument('--refine-lr', type=float, default=5e-3)
 
@@ -160,6 +193,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.from_scratch:
         args.sign_search = True
+    # Stage-1 algebraic snapshot: from-scratch reconstruction + bias + fc5, no
+    # sign search / no refine.
+    if args.skip_sign_search:
+        args.sign_search = False
     # --train-union-test12 implies --eval-on-test3 to avoid leaking X_test2.
     if args.train_union_test12 and not args.eval_on_test3:
         args.eval_on_test3 = True
@@ -267,6 +304,7 @@ def main(argv=None):
     sign_search_results = None
     sign_pair_results = None
     sign_cycle_log = None
+    fc5_crypto_stats = None
     if args.sign_search:
         print("\n" + "=" * 70 + "\nORACLE-QUERIES-ONLY SIGN SEARCH\n" + "=" * 70)
         duals_for_search = args.duals_dir if args.from_scratch else None
@@ -346,19 +384,97 @@ def main(argv=None):
         # The "headline" sign-search result (compat with the old metrics file)
         sign_search_results = sign_cycle_log[-1]['search_result']
 
-        # 6. Final fc5 LR fit (after sign-search has changed the layer-4 feature
-        # distribution; absorb the shift).
-        if args.from_scratch:
+    # 6. Final fc5 recovery (after sign search / or directly under --whitebox-prefix
+    # where fc1..fc4 are the true layers). Dispatch on --fc5-method: 'lr' fits
+    # (distillation), 'cryptanalytic' SOLVES from class-tie equations
+    # (ePrint 2025/1118, Sec 3). Runs under --from-scratch regardless of sign search.
+    if args.from_scratch:
+        if args.fc5_method == 'cryptanalytic':
+            print("\n" + "=" * 70 + "\nOUTPUT LAYER (fc5) CRYPTANALYTIC RECOVERY (final, ePrint 2025/1118 Sec 3)\n" + "=" * 70)
+            # Drop-in prefix cheat (default, disable with --fc5-crypto-no-cheat):
+            # temporarily install the TRUE hidden layers fc1..fc4 so the crypto
+            # solve computes h4 = f_{1..r}(x) on the victim's exact penultimate
+            # features (only then can fc5 be recovered correctly). This mirrors
+            # the per-layer prefix cheat recover_weights.py already uses
+            # (transfer_weights; see cheating_audit.md). Afterwards we RE-INSTATE
+            # the imperfect recovered hidden layers — only fc5 is kept — and the
+            # pipeline continues normally (bias recovery / sign search / refine).
+            use_cheat = (not args.fc5_crypto_no_cheat) and (true_model is not None)
+            saved_prefix = None
+            if use_cheat:
+                saved_prefix = {n: {k: v.clone() for k, v in getattr(reconstructed_model, n).state_dict().items()}
+                                for n in ('fc1', 'fc2', 'fc3', 'fc4')}
+                with torch.no_grad():
+                    for n in ('fc1', 'fc2', 'fc3', 'fc4'):
+                        getattr(reconstructed_model, n).load_state_dict(getattr(true_model, n).state_dict())
+                print("  [fc5-crypto] installed TRUE fc1..fc4 prefix for the h4 solve "
+                      "(drop-in cheat); will re-instate recovered layers after.")
+            fc5_crypto_stats = recover_output_layer_cryptanalytic(
+                reconstructed_model, true_model,
+                input_dim=reconstructed_model.fc1.in_features,
+                input_range=args.fc5_input_range,
+                budget_mult=args.fc5_budget_mult, verbose=True)
+            if saved_prefix is not None:
+                with torch.no_grad():
+                    for n in ('fc1', 'fc2', 'fc3', 'fc4'):
+                        getattr(reconstructed_model, n).load_state_dict(saved_prefix[n])
+                print("  [fc5-crypto] re-instated recovered (imperfect) fc1..fc4; kept crypto fc5.")
+        else:
             print("\n" + "=" * 70 + "\nOUTPUT LAYER (fc5) RECOVERY via LR on oracle labels (final)\n" + "=" * 70)
             recover_output_layer(reconstructed_model, true_model, X_train_phase3, verbose=True)
 
+        # 6b. Snapshot fc5-vs-victim BEFORE refinement, so the recovery method's
+        # own last-layer fidelity is isolated from the gradient distillation that
+        # --refine applies to fc5 afterwards.
+        fc5_pre = compute_output_layer_metrics(
+            reconstructed_model.fc5.weight.data.numpy(),
+            reconstructed_model.fc5.bias.data.numpy(),
+            true_model.fc5.weight.data.numpy(),
+            true_model.fc5.bias.data.numpy())
+        if fc5_pre:
+            fc5_pre.pop('per_neuron', None)
+            layer_metrics['fc5_recovered'] = fc5_pre
+            print(f"  [fc5 pre-refine, method={args.fc5_method}] "
+                  f"sign_acc={fc5_pre['sign_accuracy']:.4f}  "
+                  f"|cos|={fc5_pre['mean_abs_cosine_sim']:.4f}")
+
     # 7. Refinement
     refine_results = None
+    freeze_fc5 = False
     if args.refine:
         print("\n" + "=" * 70 + "\nORACLE-LABEL REFINEMENT\n" + "=" * 70)
         # Fix B: watchdog uses X_test3 only when it is actually held-out (i.e. not
         # in the training tier). If eval_tag != "X_test3", X_eval=None disables it.
         refine_X_eval = X_test3 if (eval_tag == "X_test3" and X_test3 is not None) else None
+        # Decide whether to freeze fc5 through refinement. 'auto' freezes ONLY
+        # when fc5 was recovered cryptanalytically AND the tie system reached
+        # full rank (an exact output-layer extraction worth preserving);
+        # otherwise the LR/under-determined fc5 keeps refining as before.
+        crypto_full_rank = bool(args.fc5_method == 'cryptanalytic'
+                                and fc5_crypto_stats is not None
+                                and fc5_crypto_stats.get('full_rank'))
+        if args.refine_freeze_fc5 == 'on':
+            freeze_fc5 = True
+        elif args.refine_freeze_fc5 == 'off':
+            freeze_fc5 = False
+        else:  # auto
+            freeze_fc5 = crypto_full_rank
+        # When fc5 is frozen at the EXACT victim head, that head initially
+        # mismatches the still-imperfect hidden layers, so refinement has a slow
+        # flat-start (agreement stays low for tens of epochs while the hidden
+        # layers rotate into place) before climbing. The aggressive early-stop
+        # watchdog would misread that induction period as "no progress" and
+        # restore a near-random checkpoint. So disable early-stop while fc5 is
+        # frozen and let the hidden-layer repair use the full epoch budget.
+        refine_early_stop = bool(args.early_stop and refine_X_eval is not None)
+        if freeze_fc5:
+            print(f"  [refine] freezing fc5 (mode={args.refine_freeze_fc5}, "
+                  f"crypto_full_rank={crypto_full_rank}) — preserving the exact "
+                  f"cryptanalytic output-layer extraction through refinement.")
+            if refine_early_stop:
+                print("  [refine] early-stop DISABLED for the frozen-fc5 refine "
+                      "(hidden layers need the full budget to converge onto the fixed head).")
+                refine_early_stop = False
         refine_results = oracle_label_refinement(
             reconstructed_model, true_model, X_train_phase3, recovered_masks_by_layer,
             n_epochs=args.refine_epochs, lr=args.refine_lr,
@@ -367,9 +483,10 @@ def main(argv=None):
             X_eval=refine_X_eval,
             eval_every=args.eval_every,
             patience=args.patience,
-            early_stop=bool(args.early_stop and refine_X_eval is not None),
+            early_stop=refine_early_stop,
             weight_decay=args.refine_weight_decay,
             use_cosine_lr=bool(args.refine_cosine_lr),
+            freeze_fc5=freeze_fc5,
         )
 
         print("\n--- Post-sign-search per-layer metrics ---")
@@ -391,6 +508,25 @@ def main(argv=None):
                 print(f"  layer_{lid}: sign_acc={m['sign_accuracy']:.4f}  "
                       f"|cos|={m['mean_abs_cosine_sim']:.4f}  "
                       f"mag_rel_err={m['magnitude_mean_rel_error']:.4f}")
+
+    # 7b. Output-layer (fc5) gauge-invariant metric. fc5 is only determined up
+    # to the softmax/argmax gauge (add-shared-affine-row + positive scale), so
+    # we compare canonicalised [W|b] (row-mean-centred, Frobenius-normalised).
+    # Printed for BOTH fc5 methods so the head-to-head can watch last-layer
+    # sign accuracy + |cos| directly.
+    if args.from_scratch:
+        fc5_m = compute_output_layer_metrics(
+            reconstructed_model.fc5.weight.data.numpy(),
+            reconstructed_model.fc5.bias.data.numpy(),
+            true_model.fc5.weight.data.numpy(),
+            true_model.fc5.bias.data.numpy())
+        if fc5_m:
+            fc5_m.pop('per_neuron', None)
+            layer_metrics['fc5'] = fc5_m
+            print(f"\n--- Output layer (fc5, method={args.fc5_method}) gauge-invariant metric ---")
+            print(f"  fc5: sign_acc={fc5_m['sign_accuracy']:.4f}  "
+                  f"|cos|={fc5_m['mean_abs_cosine_sim']:.4f}  "
+                  f"mag_rel_err={fc5_m['magnitude_mean_rel_error']:.4f}")
 
     # 8. Evaluation + save
     print("\n" + "=" * 70 + f"\nRECONSTRUCTED MODEL EVALUATION (on {eval_tag} — held-out)\n" + "=" * 70)
@@ -498,6 +634,12 @@ def main(argv=None):
         'sign_search_objective': str(args.sign_search_objective),
         'refinement_applied': bool(args.refine),
         'refinement_results': refine_results,
+        'fc5_method': str(args.fc5_method),
+        'fc5_crypto_stats': fc5_crypto_stats,
+        'fc5_crypto_cheat': bool(args.fc5_method == 'cryptanalytic' and not args.fc5_crypto_no_cheat),
+        'refine_freeze_fc5_mode': str(args.refine_freeze_fc5),
+        'refine_fc5_frozen': bool(freeze_fc5),
+        'skip_sign_search': bool(args.skip_sign_search),
         'from_scratch': bool(args.from_scratch),
         'eval_on_test3': bool(args.eval_on_test3),
         'train_union_test12': bool(args.train_union_test12),

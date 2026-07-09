@@ -43,6 +43,100 @@ import common
 
 N_CID = 2 # how many of the strongest output layer classes to consider
 
+# Cheating-ablation switch (default off = current behavior, byte-identical).
+# ON: whitebox.getWeightsAndBiases/getSignatures' true-weight reads for the
+# HIDDEN layers are replaced by this study's Phase-1+2 on-disk combined
+# (recovered direction x recovered sign) artifacts -- the walk no longer
+# needs the true lower-layer weights to set up its linear-region
+# parameterization. The output layer (fc5) stays true: fc5 recovery is
+# separate, out-of-scope Phase-3/cryptanalytic machinery this study does not
+# touch, and the walk needs *some* representation of "which class" a boundary
+# separates. Biases for the honest hidden layers are zeroed, matching this
+# study's "Phases I+II alone" convention elsewhere (bias recovery is Phase 3).
+HONEST_SIGN_WALK = os.environ.get("HONEST_SIGN_WALK", "0") == "1"
+
+
+def _honest_hidden_weights_biases(weights, biases):
+    """Replace weights[:-1]/biases[:-1] (hidden layers) with this study's
+    Phase-1+2 combined (unsigned magnitude x recovered sign) artifacts,
+    keeping weights[-1]/biases[-1] (output layer) untouched. Shapes are
+    taken from the true model's weights (architecture is public; only the
+    values are secret) purely to size the Kaiming fallback for any neuron
+    signature recovery didn't reach -- matches how every other honest arm in
+    this study falls back for unrecovered neurons.
+
+    Biases: an earlier version zeroed them (matching this study's "Phases
+    I+II alone" functional-eval convention elsewhere) -- that is destructive
+    HERE: zero biases shift every hidden layer's decision hyperplane through
+    the origin, which produced degenerate walk geometry (near-zero normal
+    vectors -> divide-by-zero -> runaway loops) for specific neurons during
+    smoke testing. Fixed by reusing this codebase's own no-ground-truth
+    per-layer bias estimator (analysis/extraction_pipeline/bias_recovery.py's
+    recover_biases_from_duals, already used by Phase-3's own Stage-1 step:
+    b_i = median_d(-w_i . h_{L-1}(x_d)) over that neuron's dual points) rather
+    than reading true biases -- still zero ground-truth parameter reads.
+    """
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _hlw = os.path.dirname(_here)
+    _analysis = os.path.join(_hlw, "analysis")
+    for p in (_analysis, _hlw):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    import torch as _torch
+    from extraction_pipeline.config import (
+        SIGNATURE_WEIGHTS_PATH, SIGN_RECOVERY_PATH, DUAL_POINTS_DIR,
+    )
+    from extraction_pipeline.weight_assembly import (
+        load_unsigned_weights, load_signs, combine_weights_and_signs,
+    )
+    from extraction_pipeline.bias_recovery import recover_biases_from_duals
+
+    weights = list(weights)
+    biases = list(biases)
+    n_hidden = len(weights) - 1
+    masks = {}
+    honest_pt = []  # PyTorch (out, in) weight rows, bottom-up, for the bias pass
+    _layer_offset = 0  # neuron_X dirs use GLOBAL flat indices; see weight_assembly.load_unsigned_weights's layer_offset
+    for layer_id in range(n_hidden):
+        input_dim, num_neurons = weights[layer_id].shape  # Keras (in, out)
+        unsigned, mask, _meta = load_unsigned_weights(
+            SIGNATURE_WEIGHTS_PATH, layer_id, num_neurons, input_dim,
+            use_random_init=True, layer_offset=_layer_offset,
+        )
+        _layer_offset += num_neurons
+        signs = load_signs(SIGN_RECOVERY_PATH, layer_id + 1)  # 1-indexed, see weight_assembly.reconstruct_model
+        if signs is None:
+            signs = np.ones(num_neurons, dtype=np.int8)
+        signed = combine_weights_and_signs(unsigned, signs)   # PyTorch (out, in)
+        honest_pt.append(signed)
+        masks[layer_id] = mask
+
+    # Minimal torch module exposing .fc1.. so recover_biases_from_duals /
+    # _hidden_activations_up_to (which hardcode that attribute layout) work
+    # unmodified -- shapes only, sized from the true model's public
+    # architecture, values are the honest directions computed above.
+    class _Prefix(_torch.nn.Module):
+        def __init__(self, mats):
+            super().__init__()
+            linears = [_torch.nn.Linear(m.shape[1], m.shape[0]).double() for m in mats]
+            for lin, m in zip(linears, mats):
+                with _torch.no_grad():
+                    lin.weight.data = _torch.tensor(m, dtype=_torch.float64)
+                    lin.bias.data.zero_()
+            self.fc1, self.fc2, self.fc3, self.fc4 = (
+                linears + [_torch.nn.Linear(1, 1).double()] * (4 - len(linears))
+            )
+
+    prefix_model = _Prefix(honest_pt)
+    recover_biases_from_duals(prefix_model, DUAL_POINTS_DIR, masks,
+                               layer_ids=tuple(range(n_hidden)), verbose=False)
+
+    fcs = [prefix_model.fc1, prefix_model.fc2, prefix_model.fc3, prefix_model.fc4]
+    for layer_id in range(n_hidden):
+        weights[layer_id] = fcs[layer_id].weight.data.numpy().T.astype(weights[layer_id].dtype)  # -> Keras (in, out)
+        biases[layer_id] = fcs[layer_id].bias.data.numpy().astype(biases[layer_id].dtype)
+    return weights, biases
+
 # Activation toggle. Must match signature_recovery/utils.py LEAKY_ALPHA.
 #   LEAKY_ALPHA = 0.0  -> plain ReLU (DEFAULT, original pipeline preserved exactly)
 #   LEAKY_ALPHA > 0    -> Leaky ReLU(alpha) — applied via _apply_act in this file
@@ -321,8 +415,14 @@ def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_
     # m,_ = blackbox.getLocalMatrixAndBias(weights, biases, x)
     m = get_m(x, weights, biases, use_strongest_output_port)
 
-    def get_Mb_of_layerId(x): 
-        weights_sig, biases_sig = whitebox.getSignatures(model, layerId)
+    def get_Mb_of_layerId(x):
+        if HONEST_SIGN_WALK:
+            # weights/biases in this closure are already honest-sourced by
+            # the caller (main()) when the flag is set -- reuse them instead
+            # of a second true-weight read via whitebox.getSignatures.
+            weights_sig, biases_sig = weights, biases
+        else:
+            weights_sig, biases_sig = whitebox.getSignatures(model, layerId)
         M,b = blackbox.getLocalMatrixAndBias(weights_sig[:layerId], biases_sig[:layerId], x)
         # if layerId > 1:
         #     M,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformation from input to layerId
@@ -749,6 +849,8 @@ def main(argv):
     # NOTE: earlier code used range(1, len(model.layers)) under the assumption of an explicit InputLayer at index 0.
     # Our Sequential models have Dense at index 0 directly, so take every layer - getWeightsAndBiases skips ones without weights.
     weights, biases = whitebox.getWeightsAndBiases(model, range(len(model.layers)))
+    if HONEST_SIGN_WALK:
+        weights, biases = _honest_hidden_weights_biases(weights, biases)
 
     # ---------------------------------------------------
     # Check that we can attack the desired layer

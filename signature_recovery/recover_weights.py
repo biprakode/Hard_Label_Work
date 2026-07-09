@@ -19,6 +19,14 @@ file = open(f"{sys.argv[1]}_weight_vectors.txt" , "w")
 # (|cos| etc.) is computed later, downstream, and is unaffected. Default OFF.
 NO_SIG_CHEAT = os.environ.get("NO_SIG_CHEAT", "0") == "1"
 
+# Resource-only toggle (not a method change): is_consistent_help's per-call
+# debug prints (singular values, hit counts) are negligible I/O in normal
+# recover_weights.py usage (called a handful of times per layer), but cost
+# significant wall-clock/disk when cluster_dual_points.py's cluster_slow calls
+# is_consistent O(seeds x duals) times in the cheating_ablation clustering
+# sweep. Default "1" preserves current behavior exactly.
+VERBOSE_IS_CONSISTENT = os.environ.get("VERBOSE_IS_CONSISTENT", "1") == "1"
+
 def intersect(left, right, nleft, nright):
     A = np.vstack((nleft, nright))
     b = np.array([np.dot(nleft, left), np.dot(nright, right)])
@@ -203,7 +211,8 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
     shared_coords = np.sum(np.sum(np.abs(samples[::LAYER_SIZES[layer+1]*2]) > 1e-5,0) >= 2)
     #print('shared',shared_coords)
     if shared_coords <= 3:
-        print("Reject")
+        if VERBOSE_IS_CONSISTENT:
+            print("Reject")
         return None # rejected
 
     mean_point = np.mean(samples, axis=0)
@@ -225,7 +234,8 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
 
     tt = torch.tensor(centered_samples).double()
     S = torch.linalg.svdvals(tt).cpu().numpy()
-    print(S)
+    if VERBOSE_IS_CONSISTENT:
+        print(S)
 
     return S[len(S)-all_zero-1]
 
