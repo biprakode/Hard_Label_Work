@@ -8,11 +8,8 @@
 # (PT+margin) + improved eval scorecard.
 #
 # KAGGLE NOTES
-#   * The repo hardcodes the absolute prefix
-#       /run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction
-#     in ~20 files. Rather than edit them all, this script SYMLINKS that prefix to
-#     wherever the repo actually lives (e.g. /kaggle/working/<repo>), so every
-#     hardcoded path resolves unchanged. Kaggle runs as root, so the symlink works.
+#   * All source files resolve their paths relative to this repo's location, so
+#     the repo runs unchanged wherever it is cloned (e.g. /kaggle/working/<repo>).
 #   * GPU: the dual finder (find_duals_torch.py) now runs on CUDA in float64 when
 #     a GPU is present; on a CPU box it falls back to CPU (identical results). On
 #     GPU we use ONE worker with a large batch (one CUDA context); on CPU we use
@@ -48,22 +45,10 @@ for a in "$@"; do
     esac
 done
 
-# ---------- locate repo + symlink canonical Hard_Label_Work ----------
-# Symlink the *canonical Hard_Label_Work path* directly to the real script dir,
-# so the ~20 hardcoded absolute paths resolve regardless of where the repo was
-# cloned (e.g. /kaggle/working/Hard_Label_Work with no enhanced_codebase wrapper).
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"          # real .../Hard_Label_Work, any clone location
-CANON="/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction"
-CANON_HLW="$CANON/enhanced_codebase/Hard_Label_Work"
-if [ "$HERE" != "$CANON_HLW" ]; then
-    echo "[bootstrap] symlinking $CANON_HLW -> $HERE"
-    [ -L "$CANON" ] && rm -f "$CANON"                        # drop stale prefix symlink from earlier broken runs
-    mkdir -p "$CANON/enhanced_codebase" || { echo "[bootstrap] FATAL: cannot mkdir $CANON/enhanced_codebase"; exit 1; }
-    rm -rf "$CANON_HLW"                                       # clear whatever squats the canonical slot (dir or symlink)
-    ln -sfn "$HERE" "$CANON_HLW" || { echo "[bootstrap] FATAL: symlink failed"; exit 1; }
-fi
+# ---------- locate repo ----------
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"          # repo root, any clone location
 cd "$HERE" || { echo "[bootstrap] FATAL: cd $HERE failed"; exit 1; }
-echo "[bootstrap] OK: HERE=$HERE  ->  $CANON_HLW"
+echo "[bootstrap] OK: HERE=$HERE"
 
 PY="${PYTHON_BIN:-python3}"
 command -v "$PY" >/dev/null 2>&1 || PY="/home/biprarshi/miniconda3/envs/MLenv/bin/python3"

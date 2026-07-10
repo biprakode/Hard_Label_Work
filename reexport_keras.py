@@ -17,7 +17,7 @@ import tensorflow as tf
 import keras
 keras.backend.set_floatx("float64")
 
-BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work"
+BASE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(BASE, "tiny_stuff")
 LAYER_SIZES = [3072, 256, 256, 256, 64, 10]
 

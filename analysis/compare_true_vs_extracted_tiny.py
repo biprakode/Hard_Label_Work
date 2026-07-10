@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pathlib import Path
 
-BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase"
+BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(BASE, "analysis"))
 from extraction_pipeline.weight_assembly import load_unsigned_weights  # type: ignore
 from extraction_pipeline.architectures import TinyModel  # type: ignore

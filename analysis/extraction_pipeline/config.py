@@ -15,7 +15,7 @@ import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------- base paths --
-BASE_DIR = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work"
+BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 
 
 # ----------------------------------------------------------- activation toggle --

@@ -82,7 +82,7 @@ The attack scaffolding (dual points on kinks, SVD on linearized prefix, dON/dOFF
 After all changes, with `LEAKY_ALPHA = 0.0` (default):
 ```
 $ python3 -c "from signature_recovery import utils; print(utils.MODEL_PATH)"
-/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/tiny_shit/makeblobs_relu.pth   # ← original path
+<repo>/tiny_stuff/makeblobs_relu.pth   # ← resolves relative to the repo
 $ python3 -c "from signature_recovery.utils import act; import torch; print(act(torch.tensor([-1.0,0.0,1.0])).tolist())"
 [0.0, 0.0, 1.0]   # ← ReLU output, unchanged
 ```

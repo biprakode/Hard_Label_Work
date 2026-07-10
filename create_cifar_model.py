@@ -47,7 +47,7 @@ SEED = 42
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
-BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work"
+BASE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE, "tiny_stuff")
 DATA_DIR = os.path.join(BASE, "data")
 CIFAR_DIR = os.path.expanduser("~/.keras/datasets/cifar-10-batches-py-target/cifar-10-batches-py")

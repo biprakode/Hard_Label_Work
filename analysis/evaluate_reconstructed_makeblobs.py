@@ -25,7 +25,7 @@ from sklearn.datasets import make_blobs
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase"
+BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 ORACLE_PATH = os.path.join(BASE, "tiny_stuff/tiniest_makeblobs_relu.pth")
 RECON_PATH = os.path.join(BASE, "results/reconstructed_models/reconstructed_tiniest.pth")
 X_TEST_PATH = os.path.join(BASE, "data/x_test_tiniest_makeblobs.npy")

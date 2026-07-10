@@ -86,13 +86,13 @@ SEED = 1 if len(sys.argv) < 3 else int(sys.argv[1])
 
 # Load test data based on dataset type
 if TINIEST and MAKEBLOBS:
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test_tiniest_makeblobs.npy")
+    x_test = np.load(os.path.join(BASE_DIR, "data/x_test_tiniest_makeblobs.npy"))
     x_test = np.array(x_test, dtype=np.float64)
 elif TINIER and MAKEBLOBS:
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test_tinier_makeblobs.npy")
+    x_test = np.load(os.path.join(BASE_DIR, "data/x_test_tinier_makeblobs.npy"))
     x_test = np.array(x_test, dtype=np.float64)
 elif MAKEBLOBS:
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test_makeblobs.npy")
+    x_test = np.load(os.path.join(BASE_DIR, "data/x_test_makeblobs.npy"))
     x_test = np.array(x_test, dtype=np.float64)
 else:
     # Load CIFAR-10 data with preprocessing.
@@ -100,7 +100,7 @@ else:
     # x/255*2-1 -> [-1,1].  This MUST match analysis/extraction_pipeline/
     # data_loading.py (which also does /255*2-1) so the dual-search seeds and the
     # Phase-3 oracle agree on the input distribution.
-    x_test = np.load("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/data/x_test.npy")
+    x_test = np.load(os.path.join(BASE_DIR, "data/x_test.npy"))
     if TINY:
         # 64-dim CIFAR-tiny path: greyscale-average + 4x4 subsample (expects (N,3,32,32))
         x_test = x_test.mean(1)[:, ::4, ::4]
@@ -194,7 +194,7 @@ def load_converted_model(path, model, device):
     model.load_state_dict(new_state_dict)
     return model
 
-BASE_DIR = os.path.dirname(os.path.abspath("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/"))  # directory of utils.py
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # directory of utils.py
 
 # Select model based on dataset type and activation toggle.
 # (Pre-existing bug fix: paths previously read /enhanced_codebase/... which is not

@@ -1,0 +1,910 @@
+# Enhanced Hard-Label DNN Extraction Codebase
+
+Self-contained fork of the EUROCRYPT-2024 "Polynomial Time Cryptanalytic
+Extraction of DNNs in the Hard-Label Setting" reference code, with six
+additions:
+
+1. **Streaming clustering** (`cluster_dual_points_stream.py`) — memory-bounded
+   one-pass processing of the 10M+ triplet corpus (the original OOMed).
+2. **Phase 3 reconstruction** (`analysis/extraction_pipeline/`, entry point
+   `analysis/run_extraction.py`) — hard-label post-processing that takes
+   Phases 1+2 outputs, solves biases geometrically, metaheuristic
+   sign-searches against oracle argmax, LR-fits fc5, and polishes with
+   frozen-row cross-entropy refinement. Closes the gap from ~8% to 99–100%
+   functional agreement.
+3. **Per-model smoke scripts** — `run_extract.sh` + `evaluate_*` +
+   `compare_true_vs_extracted*` so an end-to-end run produces both a
+   reconstructed `.pth` and written reports.
+4. **Leaky ReLU support** — a single `LEAKY_ALPHA` toggle (default `0.0` =
+   plain ReLU, byte-identical to original). Set `> 0` to attack
+   `*_leakyrelu.{pth,keras}` victims.
+5. **Modular Phase-3 layout** — the original 1500-line
+   `analysis/test_extraction4.py` split into `analysis/extraction_pipeline/`
+   (10 modules). Legacy shim preserved for backward compat.
+6. **Batched PyTorch dual search** (`signature_recovery/torch_impl/`) — ~44×
+   speedup on tiny (18 h → 24 min).
+
+For conceptual background (how the three phases work, why Leaky ReLU helps,
+the Phase-3 dependency graph), see `EXPLANATIONS.md`.
+
+---
+
+## Table of Contents
+
+- [Getting Started — First-Time Setup](#getting-started--first-time-setup)
+- [Quick Start (All 8 Configurations)](#quick-start-all-8-configurations)
+- [Reproducibility Checklist](#reproducibility-checklist)
+- [Headline Results](#headline-results)
+- [Pipeline Overview (Three Phases)](#pipeline-overview-three-phases)
+- [Repo Layout](#repo-layout)
+- [What Each File Does](#what-each-file-does)
+- [Canonical Workflow: `run_one_model_enhanced.sh`](#canonical-workflow-run_one_model_enhancedsh)
+- [Additive Ablation Study](#additive-ablation-study-ablation_tiny)
+- [Batched PyTorch Dual Search](#batched-pytorch-dual-search)
+- [Leaky ReLU Usage](#leaky-relu-usage)
+- [Legacy Drivers (backward compat only)](#legacy-drivers-backward-compat-only)
+- [Phase-3 Module Layout](#phase-3-module-layout)
+- [Blackbox Layer-Peeling Prototype](#blackbox-layer-peeling-prototype)
+- [Appendix A — CIFAR-10 Manual Step-by-Step](#appendix-a--cifar-10-manual-step-by-step)
+- [License / Credits](#license--credits)
+
+---
+
+## Getting Started — First-Time Setup
+
+> **Do this before anything else.** All paths in the codebase resolve relative
+> to the repo, so it runs wherever you clone it — you just need to set up your
+> environment and confirm the victim models are in place.
+
+### Step 0 — Prerequisites
+
+**Python 3.11+** with the following packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+The `requirements.txt` lists `torch`, `tensorflow` (keras is bundled — do NOT
+install standalone `keras` separately), `numpy`, `scipy`, `scikit-learn`,
+`pandas`, and `tabulate`. Tested combinations:
+
+- `torch 2.2.x` + `tensorflow 2.15.x` (CUDA 11.8 / 12.1, CPU-only also works)
+- `torch 2.3.x` + `tensorflow 2.16.x` (CUDA 12.1)
+
+**Free RAM:** ≥4 GB (tiniest), ≥8 GB (tinier), ≥20 GB (tiny / full).  
+**Free disk:** ≥80 GB for `full` (Phase-1 dual pickles alone reach ~55 GB).  
+**OS:** Linux or macOS. All drivers are bash scripts; Windows is untested.
+
+### Step 1 — Point the drivers at your Python interpreter
+
+Every shell driver uses `${PYTHON_BIN:-python3}`. If your target interpreter
+is not the default `python3` on `PATH`:
+
+```bash
+export PYTHON_BIN=/path/to/your/python3
+```
+
+Add this to your shell profile if you want it persistent.
+
+### Step 2 — Verify the victim models are in place
+
+All victim models and all three test-data slices are **pre-generated and
+included in the repo** under `tiny_stuff/` and `data/`. Confirm:
+
+```bash
+ls tiny_stuff/          # should list 10 .pth + 10 .keras + 5 _alpha.txt
+ls data/                # should list x_test*, x_test2_*, x_test3_*, y_test* for each arch
+```
+
+Expected `tiny_stuff/` contents:
+
+```
+tiniest_makeblobs_relu.{pth,keras}
+tiniest_makeblobs_leakyrelu.{pth,keras}     + tiniest_makeblobs_leakyrelu_alpha.txt
+tinier_makeblobs_relu.{pth,keras}
+tinier_makeblobs_leakyrelu.{pth,keras}      + tinier_makeblobs_leakyrelu_alpha.txt
+makeblobs_relu.{pth,keras}                  # tiny (64×5→10) ReLU
+makeblobs_leakyrelu.{pth,keras}             + makeblobs_leakyrelu_alpha.txt
+TinyModel_relu.{pth,keras}                  + TinyModel_relu_alpha.txt
+TinyModel_leakyrelu.{pth,keras}             + TinyModel_leakyrelu_alpha.txt
+```
+
+> **Note:** `tiniest_makeblobs_relu` and `makeblobs_relu` (tiny ReLU) are
+> included as pre-trained artifacts. There are no `create_*_relu.py` trainer
+> scripts for these two; they were generated by the original authors and
+> committed directly. If you need to retrain them, use the corresponding
+> leaky-ReLU trainer (`create_tiniest_makeblobs_leakyrelu.py` or
+> `create_makeblobs_leakyrelu.py`) as a template and set `LEAKY_ALPHA = 0.0`.
+
+If `tiny_stuff/` is missing CIFAR victims (e.g. after a fresh clone without
+LFS), regenerate them:
+
+```bash
+python3 create_cifar_model.py    # trains both TinyModel_relu and TinyModel_leakyrelu,
+                                 # and emits all three CIFAR data slices into data/
+```
+
+### Step 3 — Smoke test (~2 min)
+
+```bash
+./run_one_model_enhanced.sh tiniest relu
+```
+
+If this produces `results/reconstructed_models/reconstructed_tiniest.pth`
+and prints a prediction-agreement around 98–99%, your setup is correct.
+
+---
+
+## Quick Start (All 8 Configurations)
+
+```bash
+cd Hard_Label_Work
+export PYTHON_BIN=/path/to/python3     # skip if python3 is already correct
+
+# 6 make_blobs models (fast)
+./run_one_model_enhanced.sh tiniest relu        # ~2 min
+./run_one_model_enhanced.sh tiniest leakyrelu   # ~2 min
+./run_one_model_enhanced.sh tinier  relu        # ~15 min
+./run_one_model_enhanced.sh tinier  leakyrelu   # ~15 min
+./run_one_model_enhanced.sh tiny    relu        # ~30 min (batched parallel duals)
+./run_one_model_enhanced.sh tiny    leakyrelu   # ~30 min
+
+# CIFAR-10 flagship (3072-256-256-256-64-10, 832 hidden neurons)
+./run_one_model_enhanced.sh full    relu        # ~5–8 h, ≥22 GB RAM
+./run_one_model_enhanced.sh full    leakyrelu   # ~5–8 h, ≥22 GB RAM
+```
+
+Outputs land in:
+
+```
+results/reconstructed_models/reconstructed_<model>.pth   # extracted model
+results/reconstructed_models/extraction_metrics.json     # full run metrics
+results/reports/<arch>_<act>_true_vs_extracted.md        # per-neuron comparison
+results/reports/eval_<arch>_<date>.md                    # evaluation scorecard
+results/run_log.txt                                      # appended per run
+```
+
+---
+
+## Reproducibility Checklist
+
+Read this before a long run, not after.
+
+1. **Hardcoded TINY=True in utils.py.** `utils.py` ships with `TINY=True`.
+   The canonical driver (`run_one_model_enhanced.sh`) patches all arch flags
+   automatically at Step 1. If you run scripts manually, you must set the
+   right combination of `TINIEST`/`TINIER`/`TINY`/`MAKEBLOBS` in `utils.py`
+   and `batched_sign_recovery.py` yourself (or just use the driver).
+2. **Four files must share `LEAKY_ALPHA`.** The driver patches them all in
+   Step 1. For manual runs, keep in sync:
+   - `signature_recovery/utils.py`
+   - `sign_recovery/sign_recovery.py`
+   - `sign_recovery/batched_sign_recovery.py`
+   - `analysis/extraction_pipeline/config.py`
+3. **Fixed seed.** `find_duals.py` uses `SEED = 1` by default. Running it
+   multiple times without changing the seed can silently overwrite pickles.
+   Pass a different integer as `argv[1]` if you need distinct seeds.
+4. **Whitebox scaffolding present in Phases 1+2.** `utils.py` (`cheat_*`,
+   `cheat_solution`) and `sign_recovery/whitebox.py` still contain whitebox
+   reads inherited from the EUROCRYPT reference code. Phase 3 is
+   hard-label-clean. Full audit: `results/reports/tiny_cheating_audit_2026-04-24.md`.
+5. **`--eval-on-test3` for honest numbers.** Without it, Phase-3 evaluation
+   falls back to `X_test2`, which overlaps the training pool. The enhanced
+   driver passes this flag automatically.
+6. **CIFAR layers 2–3 zero-recovery is expected, not a bug.** Deep ReLU
+   neurons in a width-256 network are almost always saturated-off at the
+   query distribution. The lever is `--leakyrelu` (α > 0), not more dual
+   iterations.
+7. **Sign recovery may hang on deep layers** (30+ minutes on a single
+   neuron). Safe to kill after layers 1+2 finish — Phase 3's oracle sign
+   search fills in the rest. See Step 6 in Appendix A for the CIFAR recipe.
+8. **`DUAL_ITERS` round counts are driver-specific.** The legacy
+   `run_extract.sh` (un-batched NumPy walker) uses different defaults than
+   the enhanced driver. Do not mix them.
+
+---
+
+## Headline Results
+
+### 6 make_blobs models — end-to-end (2026-05-21, sequential dual search)
+
+| Model | Phase-1 recovered | mean \|cos\| | sign acc | X_test2 acc | agreement | wall time |
+|---|---|---|---|---|---|---|
+| tiniest_relu       | 24/32 (75%)  | 1.000 | 0.610 | 98.95%  | 98.90%  | 135 s    |
+| tiniest_leakyrelu  | 23/32 (72%)  | 1.000 | 0.451 | 99.20%  | 99.20%  | 115 s    |
+| tinier_relu        | 30/56 (54%)  | 1.000 | 0.458 | 100.00% | 100.00% | 917 s    |
+| tinier_leakyrelu   | 37/56 (66%)  | 1.000 | 0.548 | 100.00% | 100.00% | 976 s    |
+| tiny_relu          | 157/256 (61%)| 1.000 | 0.528 | 100.00% | 100.00% | ~18 hr   |
+| **tiny_leakyrelu** | **230/256 (90%)** | **1.000** | **0.525** | **100.00%** | **100.00%** | **~18.8 hr** |
+
+> The ~18 h figures are the original sequential NumPy `find_duals`. The
+> batched PyTorch port reproduces tiny_relu — 154/256 recovered, 100%
+> agreement — in **~24 min**.
+
+Highlights:
+- All 6 models achieve **98.95–100% agreement** with the oracle on X_test2.
+- **Mean |cos| = 1.000 on every recovered neuron** across all 6 runs.
+- Leaky beats ReLU at scale: tiny fc4 went from 0/64 (ReLU) → 57/64 (leaky).
+- Functional accuracy is decoupled from recovery rate: tiny_relu (61%) and
+  tiny_leakyrelu (90%) both hit 100% agreement.
+
+### CIFAR-10 flagship (2026-06-05, enhanced flags, X_test3 held-out eval)
+
+| | Baseline (2026-06-04) | CIFAR-fix (2026-06-05) |
+|---|---|---|
+| Oracle (victim) accuracy     | 53.34%      | 53.34%               |
+| Reconstructed accuracy       | ~44%        | ~44%                 |
+| **Prediction agreement**     | **50.40%**  | **54.71%** (+4.31 pt)|
+| Watchdog peak (1024-row)     | n/a         | 55.08%               |
+| Refinement epoch at stop     | 1000 (full) | 80 / 500 (12.5× fewer)|
+| L0 sign accuracy             | 49.0%       | 52.2%                |
+| Recovered neurons            | 502/832 (60%)| 502/832 (60%)       |
+| L0/L1 mean \|cos\|           | 1.000       | 1.000                |
+
+Full breakdown: `results/reports/cifar_relu_fixed_2026-06-05.md`.
+
+---
+
+## Pipeline Overview (Three Phases)
+
+```
+                                  oracle model
+                                       │
+           ┌───────────────────────────┴──────────────────────────────┐
+           │                                                           │
+   Phase 1 (signature recovery)               Phase 3 (reconstruction)
+           │                                           │
+find_duals ► cluster ► recover_weights     hard-label oracle (argmax only)
+(boundary walks)             │                         │
+                             ▼                         ▼
+                    per-neuron weights  bias ► sign-search ► fc5 LR ► refine
+                             │                                        │
+                             ▼                                        │
+                    Phase 2 (sign recovery)                           │
+                             │                                        │
+                    per-neuron signs ──────────────────────────────────┘
+                                                                      │
+                                                                      ▼
+                                                     reconstructed_<model>.pth
+```
+
+- **Phase 1** recovers each hidden neuron's weight *direction and magnitude*
+  (not sign) by walking decision boundaries and applying SVD.
+- **Phase 2** recovers +/- sign per neuron via statistical boundary walks.
+- **Phase 3** takes partial/failed Phase 1+2 output and recovers the rest
+  using only hard-label oracle queries — bias geometry, metaheuristic sign
+  search, LR output-layer fit, and frozen-row distillation refinement.
+
+---
+
+## Repo Layout
+
+```
+Hard_Label_Work/
+├── README.md                              # this file
+├── EXPLANATIONS.md                        # conceptual guide
+├── ATTACK_PROMPT.md                       # LLM prompt: logs → reports
+├── leaky_relu_port.md                     # leaky-port plan + all 5 patches
+├── leaky_eval_greedy.md                   # leaky eval notes (greedy)
+├── leaky_eval_sa_margin.md                # leaky eval notes (SA+margin)
+│
+├── requirements.txt                       # pip install -r requirements.txt
+│
+├── run_one_model_enhanced.sh              # ★ CANONICAL: full pipeline, any arch×act
+├── run_extract.sh                         # legacy sequential driver
+├── run_duals_torch.sh                     # standalone batched dual search
+├── run_from_cluster.sh                    # resume from clustering (skip duals)
+├── run_makeblobs_batch_2026-06-21.sh      # batch runner for all 6 make_blobs configs
+├── run_distillation_baseline.sh           # no-signature distillation baseline (CIFAR)
+├── run_cifar_kaggle.sh                    # CIFAR driver for Kaggle / GCE environments
+├── resume_cifar_lr.sh                     # resume CIFAR LR training
+├── validate_cifar_lr_distillation.sh      # validate CIFAR LR distillation
+│
+├── create_cifar_model.py                  # train CIFAR-10 victims (ReLU + LeakyReLU)
+│                                          # also emits all three CIFAR data slices
+├── create_tiniest_makeblobs_leakyrelu.py  # train tiniest LeakyReLU(0.01) victim
+├── create_tinier_makeblobs_leakyrelu.py   # train tinier LeakyReLU(0.01) victim
+├── create_tinier_makeblobs_relu.py        # train tinier ReLU victim
+├── create_makeblobs_leakyrelu.py          # train tiny LeakyReLU(0.01) victim
+├── emit_test3_makeblobs.py                # emit X_test3 held-out slice for make_blobs
+├── reexport_keras.py                      # convert .pth → .keras
+│
+│   NOTE: tiniest_relu and tiny (makeblobs_relu) ReLU victims have no
+│   trainer script — they are pre-generated and committed to tiny_stuff/.
+│
+├── signature_recovery/                    # Phase 1 — weight directions + magnitudes
+│   ├── utils.py                           # ★ source of truth: LAYER_SIZES, LEAKY_ALPHA,
+│   │                                      #   BASE_DIR, act(), cell_slope_mask(), oracle
+│   ├── find_duals.py                      # boundary walker → (left,middle,right) triplets
+│   ├── cluster_dual_points_stream.py      # streaming memory-bounded clustering (USE THIS)
+│   ├── cluster_dual_points.py             # original clusterer (OOMs on tiny+; ref only)
+│   ├── generate_dual_neuron.py            # cluster pickles → per-neuron .npy files
+│   ├── recover_weights.py                 # SVD null-space → unsigned weight rows
+│   ├── run_duals.sh                       # legacy bash loop for find_duals.py
+│   └── torch_impl/                        # batched PyTorch port (≈44× faster)
+│       ├── find_duals_torch.py            # B boundary walks in lockstep
+│       └── parallel_duals.py             # torch.multiprocessing wrapper
+│
+├── sign_recovery/                         # Phase 2 — per-neuron signs
+│   ├── sign_recovery.py                   # per-neuron sign via d_on vs d_off walks
+│   ├── batched_sign_recovery.py           # parallel runner + per-layer aggregation
+│   ├── whitebox.py                        # inherited EUROCRYPT helper (keras weights)
+│   ├── blackbox.py                        # coordinate transforms in affine-layer space
+│   └── common.py                          # shared argparse + save helpers
+│
+├── analysis/                              # Phase 3 — reconstruction + evaluation
+│   ├── run_extraction.py                  # ★ CLI entry point → workflow.main()
+│   ├── test_extraction4.py                # legacy shim (re-exports modular package)
+│   ├── extraction_pipeline/               # modular Phase-3 package
+│   │   ├── config.py                      # paths, LEAKY_ALPHA, _act/_act_suffix
+│   │   ├── architectures.py               # TinyModel / TinierModel / TiniestModel / FullModel
+│   │   ├── data_loading.py                # X_test / X_test2 / X_test3 loaders
+│   │   ├── metrics.py                     # three-tier weight metrics + accuracy testing
+│   │   ├── weight_assembly.py             # load/combine/reconstruct/save model
+│   │   ├── bias_recovery.py               # recover biases from dual points
+│   │   ├── output_layer_recovery.py       # fc5 LR fit on oracle hard labels
+│   │   ├── sign_search.py                 # brute-force + greedy + SA/tabu/PT sign search
+│   │   ├── refinement.py                  # frozen-row oracle distillation refinement
+│   │   ├── workflow.py                    # main() orchestration
+│   │   ├── distillation_baseline.py       # auto-build no-signature baseline
+│   │   └── eval_metrics.py                # Metrics 1–5 + EQS scorecard
+│   ├── evaluate_extraction_quality.py     # standalone scorecard runner
+│   ├── compare_true_vs_extracted.py       # tiniest per-neuron weight comparison
+│   ├── compare_true_vs_extracted_tiny.py  # tiny per-neuron weight comparison
+│   ├── compare_true_vs_extracted_v2.py    # unified per-model comparison (any arch)
+│   ├── evaluate_reconstructed_makeblobs.py# accuracy/confusion on make_blobs
+│   └── evaluate_reconstructed_tiny.py    # accuracy/confusion on tiny
+│
+├── ablation_tiny/                         # additive Phase-3 ablation on 6 victims
+│   ├── ablation_tiny.md                   # task spec
+│   ├── ablation_harness.py                # staged Phase-3 runner (read-only on pipeline)
+│   ├── aggregate_ablation.py              # combines per-victim JSONs → ABLATION_RESULTS.md
+│   ├── run_ablation.sh                    # one-command entry point
+│   └── ABLATION_RESULTS.md               # output: per-victim staged tables + EQS
+│
+├── tiny_stuff/                            # victim models (pre-generated, attack targets)
+│   ├── tiniest_makeblobs_relu.{pth,keras}
+│   ├── tiniest_makeblobs_leakyrelu.{pth,keras} + _alpha.txt
+│   ├── tinier_makeblobs_relu.{pth,keras}
+│   ├── tinier_makeblobs_leakyrelu.{pth,keras}  + _alpha.txt
+│   ├── makeblobs_relu.{pth,keras}              # tiny (64×5→10) ReLU
+│   ├── makeblobs_leakyrelu.{pth,keras}         + _alpha.txt
+│   ├── TinyModel_relu.{pth,keras}              + _alpha.txt  # CIFAR-10 flagship
+│   └── TinyModel_leakyrelu.{pth,keras}         + _alpha.txt
+│
+├── data/                                  # test data (all pre-generated, three slices each)
+│   ├── x_test_tiniest_makeblobs.npy       # Phase-3 training (seed=42)
+│   ├── x_test2_tiniest_makeblobs.npy      # queryable under --train-union-test12 (seed=99)
+│   ├── x_test3_tiniest_makeblobs.npy      # held-out eval only (seed=123)
+│   ├── y_test*_tiniest_makeblobs.npy
+│   ├── (same pattern for tinier, makeblobs/tiny, and cifar)
+│   └── x_test.npy / y_test.npy            # CIFAR-10 test batch (10K)
+│
+└── results/                               # pipeline outputs (created by drivers)
+    ├── reports/                           # per-model markdown reports + run_log.txt
+    ├── reconstructed_models/              # reconstructed_<model>.pth + metrics.json
+    └── sign_recovery/                     # layer{L}_signs.npy, confidences, summary.json
+```
+
+---
+
+## What Each File Does
+
+### Phase 1 — signature recovery (`signature_recovery/`)
+
+| File | Purpose |
+|---|---|
+| `utils.py` | **Single source of truth** for `LAYER_SIZES`, `LEAKY_ALPHA`, `BASE_DIR`, the oracle model (`cheat_net_cpu`/`cuda`), and activation helpers `act()` / `cell_slope_mask()`. Every Phase-1 script imports from here. |
+| `find_duals.py` | Walks the decision boundary from a random seed point; at each ReLU toggle records a `(left, middle, right)` triplet where `middle` lies on a hidden-neuron hyperplane. Saves as a pickle under `exp/{SEED}/duals_XXXX.p`. |
+| `cluster_dual_points_stream.py` | Streams all pickles once, identifies which neuron flipped via `cheat_neuron_diff_cuda(left, right)`, groups triplets by `(layer, neuron_idx)` with a per-neuron cap. Output: `exp/1-cluster-{0..3}.p`. **Use this, not `cluster_dual_points.py`.** |
+| `cluster_dual_points.py` | Original EUROCRYPT clusterer. Loads all triplets in RAM — OOMs >22 GB on tiny. Reference only. |
+| `generate_dual_neuron.py` | Unpacks cluster pickles into `sign_recovery/layer_neuron_npys/layer{L}_neuron{i}.npy`. |
+| `recover_weights.py` | For each layer builds a `CIFAR10NetPrefix(L)`, forward-propagates cluster midpoints, takes SVD → last right singular vector = unsigned weight row. Writes `neuron_{id}/weights_unscaled.npz` + `metadata.json`. |
+| `torch_impl/find_duals_torch.py` | B boundary walks in lockstep → one batched forward pass per step. |
+| `torch_impl/parallel_duals.py` | `torch.multiprocessing` wrapper: W workers × B walks. `--impl torch\|subprocess`. |
+
+### Phase 2 — sign recovery (`sign_recovery/`)
+
+| File | Purpose |
+|---|---|
+| `sign_recovery.py` | Per-neuron: walks the boundary on both sides, measures distance to next toggle. `d_on > d_off` determines sign. |
+| `batched_sign_recovery.py` | Parallel runner: spawns workers calling `sign_recovery.main()`. Aggregates results into `results/sign_recovery/layer{L}_{signs,confidences,votes}.npy`. **Arch flags and `LEAKY_ALPHA` must match `utils.py`.** |
+| `whitebox.py` | Inherited EUROCRYPT helper: reads true `keras_model.layers[i].get_weights()`. |
+| `blackbox.py` | Coordinate transforms from input space into the affine output of a given layer. |
+
+### Phase 3 — reconstruction (`analysis/extraction_pipeline/`)
+
+Entry point: `python3 analysis/run_extraction.py <flags>`. The legacy
+`test_extraction4.py` is a thin re-export shim — old scripts that import it
+continue to work unchanged.
+
+| Module | What it does | Oracle use |
+|---|---|---|
+| `config.py` | `BASE_DIR`, `LEAKY_ALPHA`, `_act`, `_act_suffix`, all data + model paths | none |
+| `architectures.py` | `TinyModel`, `TinierModel`, `TiniestModel`, `FullModel` (forwards through `_act`) | none |
+| `data_loading.py` | `load_test_data` / `load_test2_data` / `load_test3_data` | none |
+| `metrics.py` | Three-tier weight metrics (sign / magnitude / combined), accuracy testing | none |
+| `weight_assembly.py` | Load unsigned weights + signs; combine (sign==0 → +1); Kaiming-init unrecovered rows; save | none |
+| `bias_recovery.py` | `recover_biases_from_duals`: solves for biases geometrically from dual midpoints | none |
+| `output_layer_recovery.py` | `recover_output_layer`: forward through fc1..fc4, multinomial LR on oracle hard labels | hard-label |
+| `sign_search.py` | Brute-force (small k); greedy O(k); SA / tabu / parallel-tempering metaheuristics, all guided by oracle agreement | hard-label |
+| `refinement.py` | Adam/AdamW cross-entropy against oracle argmax; freezes recovered rows (`--refine-unfreeze` for full distillation) | hard-label |
+| `distillation_baseline.py` | Auto-builds no-signature Kaiming-init baseline if missing (mandatory for scorecard) | hard-label |
+| `eval_metrics.py` | Metrics 1–5 + EQS composite scorecard | hard-label |
+| `workflow.py` | `main()` orchestrator: data → oracle → reconstruct → bias → sign-search → fc5 LR → refine → eval → save | hard-label |
+
+### Analysis helpers
+
+| File | Produces |
+|---|---|
+| `compare_true_vs_extracted_v2.py` | Unified per-model comparison (any arch × activation). Writes `.md` + `.json`. Used by Step 8. |
+| `evaluate_extraction_quality.py` | Multi-metric scorecard (Metrics 1–5 + EQS). Auto-builds distillation baseline. Auto-detects activation. Used by Step 9. |
+| `compare_true_vs_extracted.py` | Tiniest per-neuron L1, cos sim, sign_correct. |
+| `compare_true_vs_extracted_tiny.py` | Same for tiny (64×5→10). |
+| `evaluate_reconstructed_makeblobs.py` | Accuracy / per-class / confusion matrix on make_blobs. |
+| `evaluate_reconstructed_tiny.py` | Same for tiny. |
+
+---
+
+## Canonical Workflow: `run_one_model_enhanced.sh`
+
+```bash
+./run_one_model_enhanced.sh <arch> <activation> [DUAL_ITERS]
+#   arch:       tiniest | tinier | tiny | full
+#   activation: relu    | leakyrelu
+```
+
+This driver runs the **complete end-to-end pipeline** and is the only entry
+point needed for reproducing headline results. It does:
+
+| Step | What happens |
+|---|---|
+| 0 | Clean all Phase 1+2+3 intermediate state |
+| 1 | Patch `LEAKY_ALPHA` + arch booleans across all 4 config files |
+| 2 | Batched parallel dual search (`parallel_duals.py --impl torch`) |
+| 3 | Streaming cluster (`cluster_dual_points_stream.py`) |
+| 4 | Per-neuron bridge (`generate_dual_neuron.py`) + weight recovery (`recover_weights.py {0..3}`) |
+| 5 | Phase 2 sign recovery (`batched_sign_recovery.py`) |
+| 6 | Phase 3 reconstruction (full enhanced flag set) |
+| 7 | Per-model true-vs-extracted report (`compare_true_vs_extracted_v2.py`) |
+| 8 | Improved evaluation scorecard (`evaluate_extraction_quality.py`) |
+
+### Per-arch parameters
+
+| Parameter | tiniest | tinier | tiny | full (CIFAR) |
+|---|---|---|---|---|
+| `DUAL_ITERS` (rounds) | 6 | 8 | 20 | 80 |
+| Workers / batch | 7 / 256 | 7 / 256 | 7 / 256 | 5 / 48 |
+| TARGET triplets / round | 3000 | 2000 | 10 000 | 10 000 |
+| `--sign-restarts` | 1 | 1 | 2 | 4 |
+| `--sign-pair-lookahead` | 8 | 8 | 8 | 8 |
+| `--sign-refine-cycles` | 3 | 3 | 3 | 3 |
+| `--refine-epochs` | 300 | 500 | 500 | 500 |
+| Refine optimiser | AdamW + cosine LR | ← | ← | ← |
+| Watchdog | `--early-stop --patience 5 --eval-every 10` | ← | ← | ← |
+
+Override `DUAL_ITERS`: `./run_one_model_enhanced.sh tiny relu 50`  
+Override sign-search method: `SIGN_METHOD=sa SIGN_OBJ=margin ./run_one_model_enhanced.sh tiny relu`
+
+### Sanity-checking the extracted model
+
+```python
+import torch
+m = torch.load("results/reconstructed_models/reconstructed_tiniest.pth")
+```
+
+If agreement < 90%:
+
+1. Check `extraction_metrics.json` → `recovery_stats`. If any layer has < 70%
+   recovered, run more dual iterations.
+2. Check sign summary — neurons with `confidence < 0.55` are coin-flips; sign
+   search may have missed them if `k > 18` recovered rows.
+3. Increase `--refine-epochs` (e.g. 2000). Refinement has capacity if
+   starting agreement is > ~20%.
+
+### Distillation baseline
+
+```bash
+./run_distillation_baseline.sh
+```
+
+Runs Phase 3 with all hidden rows Kaiming-initialised and trainable
+(`--refine-unfreeze`) for an apples-to-apples signature vs. no-signature
+comparison. The `evaluate_extraction_quality.py` scorecard auto-builds this
+if missing.
+
+---
+
+## Additive Ablation Study (`ablation_tiny/`)
+
+The `ablation_tiny/` directory holds an additive Phase-3 ablation across all
+6 make_blobs victims. It measures the marginal contribution of each pipeline
+component by evaluating 5 cumulative stages on held-out `X_test3`:
+
+| Stage | What's added | Cumulative pipeline |
+|---|---|---|
+| 0 RAW | Phase 1+2 output only | Recovered directions, biases=0, random output layer, Phase-2 signs |
+| 1 +BIAS | Bias recovery from dual midpoints | Stage 0 + geometric biases |
+| 2 +LR FIT | fc5 multinomial LR fit | Stage 1 + calibrated output layer |
+| 3 +SIGN SEARCH | SA+margin metaheuristic | Stage 2 + corrected signs |
+| 4 +FROZEN REFINE | Frozen-row distillation | Full pipeline (reproduces headline) |
+
+Plus a distillation baseline row per victim (Kaiming everywhere, not staged).
+
+**One-command run** (runs the canonical end-to-end attack first, then
+re-uses those on-disk Phase 1+2 artifacts for all 5 ablation stages):
+
+```bash
+cd Hard_Label_Work
+./ablation_tiny/run_ablation.sh                       # all 6 victims
+./ablation_tiny/run_ablation.sh tiniest tinier        # subset
+SKIP_DRIVER=1 ./ablation_tiny/run_ablation.sh         # reuse existing Phase 1+2 artifacts
+```
+
+Results are written to `ablation_tiny/ABLATION_RESULTS.md`.
+
+---
+
+## Batched PyTorch Dual Search
+
+`find_duals.py` is >90% of Phase-1 wall time. `signature_recovery/torch_impl/`
+reimplements the boundary walk with **B walks in lockstep** (one batched
+forward pass per step) plus **W parallel workers**.
+
+This is a pure migration — no algorithm changes. Output is byte-compatible
+`list[(left, middle, right)]` pickles. float64 throughout; CPU-first (CUDA
+also supported).
+
+```bash
+./run_duals_torch.sh <ITERS> <WORKERS> <BATCH> <IMPL>
+# tiniest:  ./run_duals_torch.sh 9   8 256 torch   # ~6 s
+# tiny:     ./run_duals_torch.sh 500 8 256 torch   # ~24 min (was ~18 h)
+```
+
+| | NumPy (original) | Torch (this port) |
+|---|---|---|
+| tiniest, 9 rounds, 8 workers | ~75–135 s | **5–9 s** (~15×) |
+| **tiny, full dual search**   | **~18 h** | **24.3 min** (**~44×**) |
+| tiny signature recovery      | 157/256   | 154/256 (matches) |
+| tiny functional agreement    | 100%      | **100%** |
+
+Two efficiency refinements: **lane compaction** (drop finished walks) and a
+**`max_outer` cap** (bound marathon lanes).
+
+---
+
+## Leaky ReLU Usage
+
+Set `LEAKY_ALPHA` in the canonical driver via the `leakyrelu` activation
+argument — it patches all 4 config files automatically. With `α = 0` the
+codebase is byte-identical to the original ReLU pipeline.
+
+### Why α > 0 helps
+
+ReLU's slope jumps `0 → 1` at the kink; Leaky ReLU's jumps `α → 1`. The kink
+is preserved, so the attack still works. More importantly, the small `α·z`
+signal on "OFF" coordinates gives SVD additional well-conditioned constraints.
+Effect grows with depth: tiny fc4 went from **ReLU 0/64 → leaky 57/64**
+recovered.
+
+### Five gated patches (all no-op when α = 0)
+
+| File | What changes |
+|---|---|
+| `signature_recovery/utils.py` | `act()`, `act_np()`, `cell_slope_mask()` — use α instead of hard zero on negative side |
+| `signature_recovery/recover_weights.py` | `relu_around` uses `cell_slope_mask`; `is_consistent_help` skips `min(hits)==0` reject; SVD gate relaxed |
+| `sign_recovery/sign_recovery.py` | `_apply_act()` — multiplies by α instead of zeroing; OFF-side masking uses `α·dy` |
+| `sign_recovery/batched_sign_recovery.py` | Resolves `*_leakyrelu.keras` model paths; propagates α to `sign_recovery` module |
+| `analysis/extraction_pipeline/` | `_act` in all 4 model classes' forwards; model-path suffix toggle in `config.py` |
+
+### Always-on bug fixes found during the leaky port
+
+- `recover_weights.py is_consistent_help`: `hits` array was sized to the
+  *target* layer output dim but indexed by *prefix* output dim. Uniform 8×
+  widths hid this in tiniest; tinier's 32→16 exposed it. Fixed to
+  `hits = np.zeros(hiddens.shape[1])`.
+- `generate_dual_neuron.py` and `recover_weights.py::dosteal` now
+  shape-filter triplets against `LAYER_SIZES[0]` before stacking, preventing
+  `ValueError: inhomogeneous shape` from stale pickles left by a prior arch run.
+
+### Tips for Leaky runs
+
+- **Sign recovery hangs:** reduce `nExpMin`/`nExp` in `batched_sign_recovery.py`
+  (use 200/2000 for layers 1–3, 100/1000 for layer 4), or kill after layers
+  1+2 finish — Phase 3 oracle sign search fills in the rest.
+- **OOM on 24 GB machines:** drop `nThreads` from 8 to 2.
+- **Leaky α > 0.05 untested.** Validated only at α = 0.01. Larger α weakens
+  the on/off asymmetry by `(1-α)/(1+α)`.
+
+---
+
+## Legacy Drivers (backward compat only)
+
+These lack the enhanced flags (no X_test3 honest-eval, no sign
+restarts/pair-flip/cycles, no AdamW/cosine watchdog). Use
+`run_one_model_enhanced.sh` for any new run.
+
+| Driver | Purpose |
+|---|---|
+| `run_one_model.sh <arch> <act>` | Earlier full-pipeline driver. **Not present in this repo** (removed; use enhanced). |
+| `run_extract.sh <model> [N]` | Legacy 6-stage runner. Un-batched NumPy walker with different round counts (tiniest=9, tinier=50, tiny=1000). |
+| `run_from_cluster.sh <arch> <act>` | Resume from clustering (skips dual search). Useful after a crash mid-run. |
+
+### Manual architecture / activation config (if not using the driver)
+
+Edit `signature_recovery/utils.py`:
+
+```python
+TINIEST   = False   # 8-8-8-8-8-8
+TINIER    = False   # 32-16-16-16-8-4
+TINY      = True    # 64-64-64-64-64-10  ← current default
+MAKEBLOBS = True    # False for CIFAR-10
+
+LEAKY_ALPHA = 0.0   # 0.01 for LeakyReLU(0.01)
+```
+
+Then replicate the same `LEAKY_ALPHA` in the three other files listed under
+[Reproducibility Checklist](#reproducibility-checklist) item 3.
+
+---
+
+## Phase-3 Module Layout
+
+Dependency graph (top → bottom, no cycles):
+
+```
+               config.py  (paths, LEAKY_ALPHA, _act)
+                    │
+          ┌─────────┼──────────┐
+          ▼         ▼          ▼
+  architectures   metrics   data_loading
+          │         │          │
+          └─────────┴────┬─────┘
+                         ▼
+                 weight_assembly ──▶ bias_recovery ──▶ output_layer_recovery
+                                            │
+                                            └──▶ sign_search
+                                                      │
+                                                      ▼
+                                                 refinement
+                                                      │
+                                                      ▼
+                                                 workflow (main)
+                                                      │
+                       distillation_baseline ◀── eval_metrics
+```
+
+- **New code** imports from `extraction_pipeline.<module>` directly.
+- **Old code** keeps working via `from test_extraction4 import …` (shim).
+
+---
+
+## Blackbox Layer-Peeling Prototype
+
+> **Note:** The `cheat_remove/` directory documented in an earlier version of
+> this README is **not present** in this repository. It was a separate
+> prototype kept elsewhere. If you need the blackbox peeling code, contact the
+> original authors.
+
+---
+
+## Appendix A — CIFAR-10 Manual Step-by-Step
+
+> Use `./run_one_model_enhanced.sh full relu` in most cases — it automates all
+> of this. This appendix exists for manual debugging and exact-reproduce runs.
+> Latest validated run: `results/reports/cifar_relu_full_2026-06-04.md`.
+
+### Hardware requirements
+
+| Resource | Minimum |
+|---|---|
+| RAM | **≥22 GB** — restart the machine before starting if swap is not empty |
+| Disk | **≥80 GB free** (dual-search pickles ~55 GB, clusters ~9 GB) |
+| CPU | 14-core recommended; recipe pins `OMP/MKL_NUM_THREADS=2`, uses 5 workers (10 BLAS threads) |
+| Wall time | ~5–6 h end-to-end (61 min dual + 3 min cluster + 67 min weights + 78 min sign L1+L2 + 7 min Phase 3) |
+
+### Step 0 — Verify victim artifacts
+
+```
+tiny_stuff/TinyModel_relu.pth           # PyTorch state_dict, float64
+tiny_stuff/TinyModel_relu.keras         # Keras SavedModel (Phase 2)
+tiny_stuff/TinyModel_relu_alpha.txt     # contains: 0.0
+data/x_test.npy                         # uint8 (10000, 3072) CIFAR test batch
+data/y_test.npy
+data/x_test2_cifar.npy                  # CIFAR train[40000:50000] — queryable
+data/y_test2_cifar.npy
+data/x_test3_cifar.npy                  # CIFAR train[10000:20000] — held-out eval
+data/y_test3_cifar.npy
+```
+
+If missing, run `python3 create_cifar_model.py` (emits all files in one pass).
+
+Sanity check — PyTorch and Keras must agree on argmax:
+
+```bash
+python3 -c "
+import sys, numpy as np, torch, os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+sys.path.insert(0, 'signature_recovery')
+import utils, tensorflow as tf
+m_k = tf.keras.models.load_model(utils.MODEL_PATH.replace('.pth', '.keras'), compile=False)
+y_pt = utils.cheat_net_cpu(torch.tensor(utils.x_test[:200], dtype=torch.float64)).argmax(1).numpy()
+y_kr = m_k(utils.x_test[:200].astype(np.float32)).numpy().argmax(1)
+print('argmax agreement (200):', float((y_pt == y_kr).mean()))
+"   # expect: 1.0
+```
+
+### Step 1 — Configure for CIFAR + ReLU
+
+All four arch flags `False`, `LEAKY_ALPHA = 0.0` in all four files. Verify:
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, 'signature_recovery'); import utils
+print('LAYER_SIZES =', utils.LAYER_SIZES)
+print('LEAKY_ALPHA =', utils.LEAKY_ALPHA)
+print('MODEL_PATH  =', utils.MODEL_PATH)
+"   # expect: [3072, 256, 256, 256, 64, 10], 0.0, .../TinyModel_relu.pth
+```
+
+### Step 2 — Clean residuals
+
+```bash
+rm -rf signature_recovery/exp/1
+rm -f  signature_recovery/exp/1-cluster-*.p
+rm -rf signature_recovery/outputs/model_weights/Vrelu/layer_*
+rm -rf sign_recovery/layer_neuron_npys
+rm -f  results/sign_recovery/*
+rm -f  results/reconstructed_models/reconstructed_*
+rm -f  results/reconstructed_models/extraction_metrics.json
+mkdir -p signature_recovery/exp/1 \
+         signature_recovery/outputs/model_weights/Vrelu \
+         sign_recovery/layer_neuron_npys \
+         results/sign_recovery \
+         results/reconstructed_models
+```
+
+### Step 3 — Dual search (~61 min)
+
+```bash
+cd signature_recovery
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \
+  python3 -u torch_impl/parallel_duals.py \
+    --iterations 140 --workers 5 --batch-size 48 --target 4000 --impl torch \
+    2>&1 | tee /tmp/cifar_relu_duals.log
+cd ..
+```
+
+Disk usage after: ~55 GB under `signature_recovery/exp/1/`.
+
+### Step 4 — Streaming cluster (~3 min)
+
+```bash
+cd signature_recovery
+CLUSTER_PER_NEURON_CAP=150 python3 -u cluster_dual_points_stream.py \
+    2>&1 | tee /tmp/cifar_relu_cluster.log
+cd ..
+```
+
+Expected:
+```
+layer 0: 256/256 covered, ~38 K triplets
+layer 1: ~251/256 covered, ~37 K triplets
+layer 2: ~244/256 covered, ~36 K triplets
+layer 3:  ~53/64  covered,  ~8 K triplets
+```
+
+### Step 5 — Weight recovery (~67 min)
+
+```bash
+cd signature_recovery
+python3 -u generate_dual_neuron.py 2>&1 | tee /tmp/cifar_relu_neuron.log
+for L in 0 1 2 3; do
+    CLUSTER_START=0 CLUSTER_END=999 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \
+      python3 -u recover_weights.py $L 2>&1 | tee /tmp/cifar_relu_recover_$L.log
+done
+cd ..
+```
+
+Expected (layer 2/3 zero-recovery is intrinsic to ReLU depth, not a bug):
+```
+layer 0:  255/256 recovered, mean abs err ~10⁻⁹
+layer 1:  247/256 recovered, mean abs err ~10⁻⁹
+layer 2:    0/256 recovered
+layer 3:    0/64  recovered
+total:    502/832 ≈ 60%
+```
+
+### Step 6 — Sign recovery, abort L3+L4 (~78 min)
+
+```bash
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 TF_CPP_MIN_LOG_LEVEL=3 \
+  python3 -u sign_recovery/batched_sign_recovery.py \
+    2>&1 | tee /tmp/cifar_relu_sign.log
+```
+
+L1 (~28 min) and L2 (~50 min) complete cleanly. L3 would take 10+ more
+hours — abort after L2 finishes, then pad stub sign files:
+
+```bash
+pkill -9 -f batched_sign_recovery
+pkill -9 -f sign_recovery.py
+```
+
+```bash
+python3 - <<'PY'
+import json, os, numpy as np
+BASE = '.'
+RESULTS_MODEL = f'{BASE}/results/model_TinyModel_relu'
+RESULTS_SIGN  = f'{BASE}/results/sign_recovery'
+LAYER_NEURONS = {1: 256, 2: 256, 3: 256, 4: 64}
+for L, n in LAYER_NEURONS.items():
+    signs = np.ones(n, dtype=np.int8)
+    confs = np.zeros(n, dtype=np.float64)
+    votes = np.zeros(n, dtype=np.int32)
+    done  = 0
+    lay_dir = f'{RESULTS_MODEL}/layerID_{L}'
+    if os.path.isdir(lay_dir):
+        for nid in range(n):
+            f = f'{lay_dir}/neuronID_{nid}/sign_result.json'
+            if os.path.exists(f):
+                try:
+                    d = json.load(open(f))
+                    s = d.get('recovered_sign')
+                    if s in (1, -1): signs[nid] = int(s)
+                    confs[nid] = float(d.get('confidence', 0.0))
+                    votes[nid] = int(d.get('total_votes', 0))
+                    done += 1
+                except Exception: pass
+    if L in (3, 4) or not os.path.exists(f'{RESULTS_SIGN}/layer{L}_signs.npy'):
+        np.save(f'{RESULTS_SIGN}/layer{L}_signs.npy', signs)
+        np.save(f'{RESULTS_SIGN}/layer{L}_confidences.npy', confs)
+        np.save(f'{RESULTS_SIGN}/layer{L}_votes.npy', votes)
+        json.dump({'layerID': L, 'num_neurons': n, 'neurons_processed': done,
+                   'signs': signs.tolist(), 'confidences': confs.tolist(),
+                   'note': 'partial — Phase-2 halted' if L in (3, 4) else None},
+                  open(f'{RESULTS_SIGN}/layer{L}_summary.json', 'w'), indent=2)
+print('Wrote layer{1..4}_*.npy + summaries')
+PY
+```
+
+### Step 7 — Phase 3 reconstruction
+
+**Recommended** (CIFAR-fix, +4.3 pt held-out gain):
+
+```bash
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 TF_CPP_MIN_LOG_LEVEL=3 \
+  python3 -u analysis/run_extraction.py \
+    --full --from-scratch --refine --refine-epochs 500 \
+    --eval-on-test3 --train-union-test12 \
+    --early-stop --patience 5 --eval-every 10 \
+    --refine-weight-decay 1e-4 --refine-cosine-lr \
+    --sign-restarts 4 --sign-pair-lookahead 8 \
+    --sign-refine-cycles 3 --sign-refine-mini-epochs 20 \
+    2>&1 | tee /tmp/cifar_relu_phase3_fixed.log
+```
+
+Expected stages:
+1. Recovery summary: 502/832 recovered, 330 random-init
+2. Bias recovery: 502 biases set from dual midpoints
+3. fc5 LR fit: ~34.5% agreement on X_test3
+4–6. Three sign-search + mini-refine cycles
+7. Final refinement watchdog fires ~epoch 80/500
+8. Eval on X_test3: agreement ≈ **54.7%**
+
+### Step 8 — Reports
+
+```bash
+python3 analysis/compare_true_vs_extracted_v2.py \
+    --arch full --activation relu \
+    --output results/reports/cifar_relu_true_vs_extracted.md
+python3 analysis/evaluate_extraction_quality.py --full
+```
+
+---
+
+## License / Credits
+
+Attack algorithm: Carlini, Chen, Choquette-Choo, Kos, Tramèr,
+"Polynomial Time Cryptanalytic Extraction of Deep Neural Networks in the
+Hard-Label Setting", EUROCRYPT 2024.

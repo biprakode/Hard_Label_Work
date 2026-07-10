@@ -276,7 +276,7 @@ def extract_weights(maybe, prefix, layer):
 def dosteal(LAYER, cluster):
     prefix = CIFAR10NetPrefix(LAYER).cpu()
     transfer_weights(cheat_net_cpu, prefix)
-    layer_dir = os.path.join('/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/outputs/model_weights/Vrelu', f"layer_{LAYER}")
+    layer_dir = os.path.join(os.path.join(BASE_DIR, 'signature_recovery/outputs/model_weights/Vrelu'), f"layer_{LAYER}")
     os.makedirs(layer_dir, exist_ok=True)
 
     # Robustness: drop triplets whose left/middle/right shape doesn't match the
@@ -417,4 +417,4 @@ def dosteal(LAYER, cluster):
 
 if __name__ == '__main__':
     layer = int(sys.argv[1])
-    dosteal(layer, pickle.load(open("/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1-cluster-%d.p"%layer,"rb")))
+    dosteal(layer, pickle.load(open(os.path.join(BASE_DIR, "signature_recovery/exp/1-cluster-%d.p")%layer,"rb")))

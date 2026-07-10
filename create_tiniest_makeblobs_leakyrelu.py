@@ -30,7 +30,7 @@ HIDDEN = [8, 8, 8, 8]
 OUT = 8
 assert OUT == N_CLASSES
 
-BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase"
+BASE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE, "tiny_stuff")
 DATA_DIR = os.path.join(BASE, "data")
 os.makedirs(OUT_DIR, exist_ok=True)

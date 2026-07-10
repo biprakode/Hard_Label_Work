@@ -14,6 +14,9 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
     os.environ.setdefault(_v, "1")
 import sign_recovery
 
+# Repo root (this file lives in <repo>/sign_recovery/).
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # ========== Global Settings ========== #
 MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
 TINIEST = True  # Use tiniest 8-8-8-8-8-8 model
@@ -26,7 +29,7 @@ FULL = True  # Full flagship CIFAR-10 (3072->256->256->256->64->10)
 LEAKY_ALPHA = 0.01
 sign_recovery.LEAKY_ALPHA = LEAKY_ALPHA  # propagate to sign_recovery activation forwards
 _act_suffix              = "leakyrelu" if LEAKY_ALPHA > 0 else "relu"
-_TINY_STUFF              = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/tiny_stuff"
+_TINY_STUFF              = os.path.join(BASE_DIR, "tiny_stuff")
 
 if TINIEST and MAKEBLOBS:
     model_name           = "tiniest_makeblobs_4hidden_float64"
@@ -50,8 +53,8 @@ else:
     model_path           = f"{_TINY_STUFF}/TinyModel_{_act_suffix}.keras"
     LAYER_NEURON_COUNTS  = {1: 64, 2: 64, 3: 64, 4: 64}
 
-duals_path               = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/sign_recovery/layer_neuron_npys"  # Path to precomputed dual points
-output_path              = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/results/sign_recovery"  # Output path for aggregated results
+duals_path               = os.path.join(BASE_DIR, "sign_recovery/layer_neuron_npys")  # Path to precomputed dual points
+output_path              = os.path.join(BASE_DIR, "results/sign_recovery")  # Output path for aggregated results
 LAYERIDS                 = (1, 2, 3, 4)  # layer IDs to analyze
 analyzeWiggleSensitivity = 'True'  # Record the sensitivity to the wiggle at the target layer
 analyzeSpeed             = 'True'  # Record the rate of change of future layer neurons
@@ -173,10 +176,9 @@ def main():
             # geometry seen during this study's smoke testing -- filtering
             # matches how every other stage of this pipeline already treats
             # unrecovered neurons (skipped / marked unknown), not a new cheat.
-            _sig_layer_dir = (
-                "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/"
-                f"enhanced_codebase/Hard_Label_Work/signature_recovery/outputs/"
-                f"model_weights/Vrelu/layer_{layerID - 1}"
+            _sig_layer_dir = os.path.join(
+                BASE_DIR,
+                f"signature_recovery/outputs/model_weights/Vrelu/layer_{layerID - 1}"
             )
             # neuron_X directory names are GLOBAL flat indices (e.g. layer 1 of
             # tiniest spans neuron_8..neuron_15), not the per-layer 0..N-1

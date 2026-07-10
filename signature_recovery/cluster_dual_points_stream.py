@@ -23,8 +23,8 @@ from utils import (
     LAYER_SIZES,
 )
 
-ROOT = '/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp/1'
-OUT_DIR = '/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work/signature_recovery/exp'
+ROOT = os.path.join(BASE_DIR, 'signature_recovery/exp/1')
+OUT_DIR = os.path.join(BASE_DIR, 'signature_recovery/exp')
 
 # Per-neuron cap. recover_weights.py slices to [:1200] and its hits-coverage
 # subsampling effectively uses only ~2 duals per input coord, so a few hundred

@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work"
+BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(BASE, "analysis"))
 
 from extraction_pipeline.architectures import TiniestModel, TinierModel, TinyModel, FullModel  # noqa: E402

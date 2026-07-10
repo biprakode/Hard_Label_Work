@@ -31,7 +31,7 @@ N_CLASSES = 10
 N_TEST = 10000
 LAYER_SIZES = [64, 64, 64, 64, 10]
 
-BASE = "/run/media/biprarshi/COMMON/files/AI/hard-label-dnn-extraction/enhanced_codebase/Hard_Label_Work"
+BASE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE, "tiny_stuff")
 DATA_DIR = os.path.join(BASE, "data")
 os.makedirs(OUT_DIR, exist_ok=True)
