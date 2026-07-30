@@ -12,6 +12,20 @@ support, and an improved evaluation scorecard.
 ➡ **For how the codebase works** (the three phases, file-by-file map, Leaky-ReLU
 internals, Phase-3 module layout, caveats) see **[EXPLANATIONS.md](EXPLANATIONS.md)**.
 
+➡ **For the paper's background material and supporting tables** see
+**[supplementary_material.pdf](supplementary_material.pdf)** — the supplementary
+material for CSCML 2026 submission 183, *Extraction meets Distillation*. It was cut
+from the camera-ready for the page limit. §1 is the background and notation
+(network model, critical hyperplanes and decision boundaries, dual points and dual
+spaces, ReLU / Leaky ReLU, multinomial logistic regression, gradient descent,
+activation patterns and affine regions) — the definitions the rest of this guide
+and `EXPLANATIONS.md` assume. §§2–7 hold the eight tables the main body defers to:
+the three-tier dataset contract, the per-architecture and shared attack parameters
+(the settings the drivers below are configured with), the ReLU vs Leaky-ReLU
+scaling comparison, the SA-vs-PT sign-optimiser A/B, the per-metric EQS breakdown
+for both CIFAR-10 flagships, and the additive Phase-3 ablation. Source:
+[supplementary_material.tex](supplementary_material.tex).
+
 ---
 
 ## Cheating ablation study (read this first if you're reviewing)

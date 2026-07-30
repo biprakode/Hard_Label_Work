@@ -84,6 +84,8 @@ TOTAL_HIDDEN_NEURONS = LAYER_BOUNDARIES[-1]
 
 SEED = 1 if len(sys.argv) < 3 else int(sys.argv[1])
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # directory of utils.py
+
 # Load test data based on dataset type
 if TINIEST and MAKEBLOBS:
     x_test = np.load(os.path.join(BASE_DIR, "data/x_test_tiniest_makeblobs.npy"))
@@ -193,8 +195,6 @@ def load_converted_model(path, model, device):
 
     model.load_state_dict(new_state_dict)
     return model
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # directory of utils.py
 
 # Select model based on dataset type and activation toggle.
 # (Pre-existing bug fix: paths previously read /enhanced_codebase/... which is not

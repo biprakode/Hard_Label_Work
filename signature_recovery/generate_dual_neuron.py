@@ -5,7 +5,7 @@ import sys
 
 # Add parent directory for utils import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils import LAYER_SIZES, LAYER_BOUNDARIES
+from utils import LAYER_SIZES, LAYER_BOUNDARIES, BASE_DIR
 
 # Expected input-space dim for dual points. Triplet middles whose shape doesn't
 # match this are stale from a different architecture (e.g. a previous tinier

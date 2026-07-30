@@ -27,6 +27,28 @@ additions:
 For conceptual background (how the three phases work, why Leaky ReLU helps,
 the Phase-3 dependency graph), see `EXPLANATIONS.md`.
 
+**Reviewers, start here for the definitions and the numbers:**
+[`supplementary_material.pdf`](supplementary_material.pdf) is the supplementary
+material for CSCML 2026 submission 183, *Extraction meets Distillation*. It was
+cut from the paper's camera-ready for the page limit, and the five places in the
+main body that say "see the supplementary material" all point at it. Two parts:
+
+- **§1 Additional Background Materials** — the paper's notation and background in
+  seven subsections: the fully connected network model and its parameter set,
+  critical hyperplanes and decision boundaries, dual points and dual spaces, ReLU
+  and Leaky ReLU (and why the pre-activation zero-set is independent of α, which
+  is what lets one attack serve both), multinomial logistic regression, gradient
+  descent, and activation patterns / affine regions. These are the definitions
+  `EXPLANATIONS.md` and the module docs below take as given.
+- **§§2–7 Additional Experimental Results** — the exact dataset contract and
+  reference attack parameters used for every experiment reported here, plus the
+  ReLU vs Leaky-ReLU scaling table, the simulated-annealing vs parallel-tempering
+  A/B, the per-metric EQS breakdown for both CIFAR-10 flagships, and the additive
+  Phase-3 ablation. Eight tables in all, expanding the paper's Table 1 (per-victim
+  extraction results) and Table 2 (composite EQS, extraction vs distillation).
+
+LaTeX source: [`supplementary_material.tex`](supplementary_material.tex).
+
 ---
 
 ## Table of Contents
@@ -205,6 +227,12 @@ Read this before a long run, not after.
 ---
 
 ## Headline Results
+
+> The paper's own reporting of these runs — the reference attack parameters, the
+> ReLU vs Leaky-ReLU scaling table, the SA-vs-PT sign-optimiser A/B, the
+> per-metric EQS breakdown for both CIFAR flagships, and the additive Phase-3
+> ablation — is in [`supplementary_material.pdf`](supplementary_material.pdf)
+> (CSCML 2026 paper 183, *Extraction meets Distillation*).
 
 ### 6 make_blobs models — end-to-end (2026-05-21, sequential dual search)
 
@@ -530,6 +558,9 @@ component by evaluating 5 cumulative stages on held-out `X_test3`:
 | 4 +FROZEN REFINE | Frozen-row distillation | Full pipeline (reproduces headline) |
 
 Plus a distillation baseline row per victim (Kaiming everywhere, not staged).
+
+The published form of this table — all six victims, agreement and structural EQS
+per stage — is Table 8 of [`supplementary_material.pdf`](supplementary_material.pdf).
 
 **One-command run** (runs the canonical end-to-end attack first, then
 re-uses those on-disk Phase 1+2 artifacts for all 5 ablation stages):

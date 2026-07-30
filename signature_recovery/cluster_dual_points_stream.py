@@ -21,6 +21,7 @@ from utils import (
     cheat_neuron_diff_cuda,
     LAYER_BOUNDARIES,
     LAYER_SIZES,
+    BASE_DIR,
 )
 
 ROOT = os.path.join(BASE_DIR, 'signature_recovery/exp/1')

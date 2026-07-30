@@ -19,7 +19,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ========== Global Settings ========== #
 MAKEBLOBS = True  # Use make_blobs synthetic dataset instead of CIFAR-10
-TINIEST = True  # Use tiniest 8-8-8-8-8-8 model
+TINIEST = False  # Use tiniest 8-8-8-8-8-8 model
 TINIER = False  # Use tinier model with non-uniform hidden widths (32->16->16->16->8->4)
 FULL = True  # Full flagship CIFAR-10 (3072->256->256->256->64->10)
 

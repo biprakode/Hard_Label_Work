@@ -1,0 +1,418 @@
+% ===========================================================================
+%  Supplementary material for CSCML 2026 paper 183,
+%  "Extraction meets Distillation".
+%
+%  This document reproduces two of the paper's appendices, cut from the
+%  camera-ready for the page limit and pointed at from the main body:
+%
+%    Section 1        = \section{Additional Background Materials} (app:prelim),
+%                       copied with its seven \subsection blocks intact.
+%    Sections 2 - 7   = \section{Additional Experimental Results} (app:exp),
+%                       whose six \subsection blocks are promoted to \section
+%                       (there is no parent \section for them here).
+%
+%  Every definition, equation, table, caption, label and number is reproduced
+%  verbatim.  The only other edits are that cross-references pointing into the
+%  main body are spelled out as text, since they cannot resolve in a
+%  standalone document, and one table is scaled to fit (see its comment).
+%
+%  Preamble and author block copied from the camera-ready source.
+% ===========================================================================
+\documentclass[runningheads,orivec]{llncs}
+\usepackage[T1]{fontenc}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{makecell}    % multi-line table headers
+\usepackage{float}       % H float specifier (keep tables in place)
+\usepackage{xurl}        % for url issue in 1.2
+\usepackage[hidelinks]{hyperref} % hyperref last, LNCS-compatible
+\raggedbottom         % fixing the spaces between references
+
+\begin{document}
+
+\title{Supplementary Material for ``Extraction meets Distillation''}
+\titlerunning{Supplementary Material: Extraction meets Distillation}
+\author{
+    Biprarshi Biswas\inst{1} \and
+    Arya Anshuman Ojha\inst{2} \and
+    Yubaraj Das\inst{1} \and
+    Devansh Khosla\inst{3} \and
+    Kamran Rais\inst{3} \and
+    Saankhya Samanta\inst{4} \and
+    Subhamoy Maitra\inst{5}
+}
+\authorrunning{B. Biswas et al.}
+
+% Native LNCS institute format
+\institute{
+    Jadavpur University, Kolkata, India\\
+    \email{\{biprarshib, yyubarajddas9876\}@gmail.com}
+\and
+    National Institute of Science Education and Research, Bhubaneswar, India\\
+    \email{kalingasandhababun@gmail.com}
+\and
+    Institute of Mathematics and Application, Bhubaneswar, India\\
+    \email{\{devanshkhosla289, kamranrais41\}@gmail.com}
+\and
+    Indian Institute of Technology, Kharagpur, India\\
+    \email{saankhya.samanta99@gmail.com}
+\and
+    Indian Statistical Institute, Kolkata, India\\
+    \email{\{subho@isical.ac.in, maitra.subhamoy@gmail.com\}}
+}
+\maketitle
+
+\noindent
+This document is the supplementary material for CSCML 2026 submission 183,
+\emph{Extraction meets Distillation --- Cryptanalytic techniques to recover
+Parameters from a Deep Neural Network}. Section~\ref{app:prelim} records the
+background material and notation used throughout the paper, for completeness.
+Sections~\ref{app:exp:setup}--\ref{app:exp:ablation} then collect the supporting
+experimental detail deferred from the main body: the dataset contract and the
+reference attack parameters, the ReLU versus Leaky ReLU scaling comparison, the
+A/B of the two sign optimisers, the per-metric EQS breakdown for the two
+CIFAR-10 flagships, and the additive Phase-3 ablation. The main paper's
+Table~1 (\texttt{tab:permodel}, per-victim extraction results) and Table~2
+(\texttt{tab:eqs}, composite EQS for the extraction and distillation arms)
+report the headline numbers that the tables here expand on; the five places in
+the main body that defer to ``the supplementary material'' all point to this
+document. Nothing here is new --- every definition, number, caption and table is
+reproduced unchanged from the paper's original appendices.
+
+\section{Additional Background Materials}
+\label{app:prelim}
+Here we add background materials for completeness. We use popular notation throughout, if not otherwise mentioned.
+
+\subsection{Deep Neural Networks (DNNs)}
+\label{app:prelim:notation}
+We study fully connected feedforward networks $f_\theta : \mathbb{R}^{d_0} \to \mathbb{R}^{d_{r+1}}$ composed of $r+1$ affine layers separated by an element wise nonlinearity $\sigma$:
+\begin{equation}
+    f_\theta = f_{r+1} \circ \sigma \circ f_r \circ \cdots \circ \sigma \circ f_1, \qquad f_i(\boldsymbol{x}) = A^{(i)} \boldsymbol{x} + \boldsymbol{b}^{(i)},
+\end{equation}
+where $A^{(i)} \in \mathbb{R}^{d_i \times d_{i-1}}$ and $\boldsymbol{b}^{(i)} \in \mathbb{R}^{d_i}$ represent the weight matrix and bias vector of layer $i$, whose individual rows $A^{(i)}_j$ and entries $b^{(i)}_j$ define the weight vector and bias of neuron $(i,j)$ respectively. The network contains a total of $N = \sum_{k=1}^{r} (d_k)$ hidden neurons. The final layer ($f_{r+1}$)  output is passed to a $\text{softmax}$ function to yield a class probability vector, from which the $\arg\max$ operator selects the index of the highest probability to produce the final class label. The complete trainable parameter set is defined as:
+\begin{equation}
+    \theta = \left\{ \left( A^{(i)}, b^{(i)} \right) \right\}_{i=1}^{r+1}.
+\end{equation}
+
+\subsection{Critical Hyperplanes and Decision Boundaries}
+A region boundary at which a single neuron $(i,j)$ switches sign while all other neurons keep theirs is the \emph{critical hyperplane} of that neuron
+\[
+  \mathcal{H}_{i,j} = \bigl\{\, \boldsymbol{x} \in \mathbb{R}^{d_0} : \eta_{i,j}(\boldsymbol{x}) = 0 \,\bigr\}.
+\]
+where $\eta_{i,j}(\boldsymbol{x})$ represents the pre-activation value of a neuron $(i,j)$.For a first-layer neuron $\mathcal{H}_{1,j}$ is a hyperplane in the input space with normal $A^{(1)}_j$. For a deeper neuron it is a piecewise-linear surface whose local orientation is given by an effective normal $\widetilde{A}^{(i)}_j$. The oracle separately partitions the input space by predicted label. The \emph{decision boundary} between classes $m$ and $n$ is
+\[
+  \mathcal{D}_{m,n} = \bigl\{\, \boldsymbol{x}\in \mathbb{R}^{d_0}: [f_\theta(\boldsymbol{x})]_m = [f_\theta(\boldsymbol{x})]_n = \max_k [f_\theta(\boldsymbol{x})]_k \,\bigr\}.
+\]
+Decision boundaries are themselves piecewise-linear and they bend wherever they
+cross a critical hyperplane, since the underlying affine map $M_\rho x + c_\rho$
+changes across the crossing and the boundary changes orientation with it.
+
+\subsection{Dual Points and Dual Spaces}
+The central primitive the pipeline exploits is a point that is critical for the oracle. A point $x^\ast$ is a \emph{dual point} for neuron $(i,j)$ if it lies on that neuron's critical hyperplane and simultaneously on some decision boundary, that
+is $x^\ast \in \mathcal{H}_{i,j} \cap \mathcal{D}_{m,n}$ for some $m \neq n$. Its \emph{dual space} is the local intersection
+$\mathcal{S}_{x^\ast} = \mathcal{H}_{i,j} \cap \mathcal{D}_{m,n}$ in a neighbourhood of $x^\ast$. The attacker never observes $\mathcal{H}_{i,j}$ directly and works only from labels, recovering each dual point from the bend
+
+\subsection{Activation Functions}
+\label{app:prelim:relu}
+We consider two piecewise-linear (PWL) activation functions: the Rectified Linear Unit, $\text{ReLU}(t) = \max(0, t)$, and its generalization, Leaky ReLU, defined for a fixed slope $\alpha > 0$ (typically $\alpha \in [10^{-3}, 10^{-1}]$)~\cite{maas2013leakyrelu} as:
+\begin{equation}
+    \text{ReLU}(t) = \max(0, t) \quad \text{and} \quad \text{LReLU}_\alpha(t) = \max(\alpha t, t) = \begin{cases} t & t > 0, \\ \alpha t & t \leq 0. \end{cases}
+\end{equation}
+While $\text{ReLU}$ completely zeroes out negative pre-activations so that an inactive neuron contributes nothing downstream, $\text{LReLU}_\alpha$ allows inactive neurons to pass an $\alpha$-scaled leakage signal. Dynamically, $\text{ReLU}$ can be viewed as the limiting case where $\alpha = 0$. Crucially, the zero-set of the pre-activation is entirely independent of $\alpha$, allowing our geometric attack to uniformly target both activation topologies.
+
+\subsection{Multinomial Logistic Regression}
+\label{app:prelim:multinomiallogreg}
+Logistic Regression, a popular Machine Learning Algorithm was designed to handle binary classification. To extend it to the multinomial classification domain, Multinomial Logistic Regression (or also Softmax Regression) was introduced. Unlike Logistic Regression which uses a sigmoid activation function, multinomial logistic regression uses the softmax activation function to model the probabilities of multiple classes simultaneously.
+
+\[
+\begin{array}{cc}
+\textbf{Sigmoid Function} & \textbf{Softmax Function} \\[8pt]
+\sigma(z)=\frac{1}{1+e^{-z}},
+&
+\text{Softmax}(z_i)=\frac{e^{z_i}}{\sum_{j=1}^{K} e^{z_j}},
+\end{array}
+\]
+where $K$ is the number of classes, and Softmax($z_i$) is the probability of being in the class $i$.
+
+\subsection{Gradient Descent}
+\label{app:prelim:graddesc}
+Gradient Descent is a popular optimisation technique especially to minimise functions where obtaining a closed form equation is difficult (i.e., finding their optima by equating their 1st derivative to 0). In such a case the objective function (say $J$) is minimised in an iterative manner. The process starts with an initialisation of parameters (say $\theta$) to be optimised, and their values are updated iteratively using the gradient of the objective function as:
+
+\[
+\theta := \theta - \eta \frac{\partial J(\theta)}{\partial \theta}
+\]
+where, $\eta$ is a hyperparameter called the learning rate and decides how much the gradient will affect the value of the parameter.
+This process repeats till the value of the parameters converge.
+
+
+\subsection{Activation Patterns and Affine Regions}
+\label{app:prelim:dual}
+For a fixed network $f_\theta$, each input $x$ induces an \textbf{activation pattern} $\rho(x) \in \{0,1\}^N$ defined element-wise over all hidden neurons by the indicator function:
+\begin{equation}
+    \rho_{i,j}(x) = \mathbf{1}\left[\eta_{i,j}(x) > 0\right].
+\end{equation}
+Inputs sharing an identical activation pattern $\rho$ restrict the network to a single, locally affine mapping $f_\theta|_\rho(x) = M_\rho x + c_\rho$. The closure of each such input set forms an \textbf{affine region}. Collectively, these regions form a piecewise-affine partition of the input space, meaning $f_\theta$ is locally linear within each region, while its non-linear characteristics are strictly confined to the regional boundaries.
+
+\section{Experimental setup tables}
+\label{app:exp:setup}
+\paragraph{Evaluation methodology.}
+Every victim is extracted under one three-tier dataset contract
+(Table~\ref{tab:datacontract}). Two oracle- slices form the Phase-3 training pool and a third disjoint slice is held out for every reported number, so training and evaluation inputs never overlap.
+
+\begin{table}[H]
+\centering
+\caption{Dataset contract, uniform across all victims}
+\label{tab:datacontract}
+\begin{tabular}{lll}
+\toprule
+Slice & Role & Source (\texttt{make\_blobs} / CIFAR-10) \\
+\midrule
+$X_{\mathrm{test}}$  & Phase-3 training pool                   & seed 42 sample / test batch \\
+$X_{\mathrm{test2}}$ & Phase-3 training pool                   & seed 99 sample / train idx 40000--49999 \\
+$X_{\mathrm{test3}}$ & \textbf{Held-out evaluation} + watchdog & seed 123 sample / train idx 10000--19999 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Reference Attack Parameters}
+\label{app:exp:params}
+This subsection records the exact parameters used for every experiment reported in
+this work, for reproducibility. These values were chosen for experimentation under
+our compute budget and carry no deeper justification. We did not tune them toward a
+theoretical optimum, and different settings would likely trade run time against
+recovery quality without changing the qualitative results.
+
+Table~\ref{tab:params-arch} lists the per-architecture settings that vary across the
+victim suite. Table~\ref{tab:params-shared} lists the pipeline parameters that are held
+fixed across all victims. The \texttt{make\_blobs} values are hardcoded in the batch
+driver of the runs. The CIFAR-10 flagship uses a separate driver retuned to the values in
+the \texttt{full} column, run on a single V100 GPU in float64.
+
+\begin{table}[H]
+\centering
+\caption{Per-architecture tuning. Each dual-search round emits the per-architecture
+target triplet count (\texttt{tiniest} 3000, \texttt{tinier} 2000, \texttt{tiny} and
+\texttt{full} 10000). PT+margin is intractable on the 256-wide CIFAR architecture, so
+the flagship uses SA+margin only.}
+\label{tab:params-arch}
+\setlength{\tabcolsep}{5pt}\small
+\begin{tabular}{lcccc}
+\toprule
+Parameter & \texttt{tiniest} & \texttt{tinier} & \texttt{tiny} & \texttt{full} (CIFAR) \\
+\midrule
+dual-search rounds        & 6       & 8       & 20      & 150 \\
+dual workers / batch      & 7 / 256 & 7 / 256 & 7 / 256 & 1--3 / 256 \\
+target triplets / round   & 3000    & 2000    & 10000   & 10000 \\
+sign restarts             & 1       & 1       & 2       & 0--1 \\
+sign pair-lookahead       & 8       & 8       & 8       & 4 \\
+sign refine cycles        & 3       & 3       & 3       & 1 \\
+refine epochs             & 300     & 500     & 500     & 500 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Pipeline parameters held fixed across all victims. Both activations share
+these settings; only \texttt{LEAKY\_ALPHA} distinguishes the ReLU and Leaky ReLU runs.}
+\label{tab:params-shared}
+% Fit-only adjustment for the standalone LNCS text block: tabcolsep trimmed
+% 6pt -> 3pt and the tabular scaled to \textwidth.  (llncs \let\footnotesize
+% \small, so a font step down is not available.)  Rows, columns, captions and
+% values are unchanged.
+\setlength{\tabcolsep}{3pt}\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lll}
+\toprule
+Phase & Parameter & Value \\
+\midrule
+Dual search  & implementation      & \texttt{torch}, CUDA float64 \\
+Sign recovery & runner             & \texttt{batched\_sign\_recovery.py}, float64 \\
+Reconstruction & sign-search method & SA+margin (default); PT+margin (A/B arm) \\
+             & mini-refine          & 20 epochs, lr $5{\times}10^{-3}$, wd $10^{-4}$ \\
+             & refine optimiser     & AdamW, cosine lr, wd $10^{-4}$ \\
+             & watchdog             & early stop, patience 5, eval every 10 \\
+             & eval gating          & eval on X\_test3, train on X\_test $\cup$ X\_test2 (20K) \\
+Activation   & \texttt{LEAKY\_ALPHA} & 0.0 (ReLU) / 0.01 (Leaky ReLU) \\
+Oracle cost  & batched argmax queries & 3 per model (sign search, fc5 fit, refinement) \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\section{ReLU versus Leaky ReLU scaling}
+\label{app:exp:scaling}
+Table~\ref{tab:scaling} upholds the effect of the activation on Phase-1-2 recovery. The advantage of Leaky ReLU increases as the architecture widens, therefore the gap between the two recovered-count columns is high for the larger architectures. The two fc4 columns show where this advantage originates, in the deepest hidden layer that ReLU leaves almost unrecovered. The effect is structural rather than incidental, because it strengthens with depth and width together.
+
+\begin{table}[H]
+\centering
+\caption{Phase-1 recovery, ReLU vs Leaky ReLU. The Leaky advantage grows with
+scale ($+5$ / $+6$ / $+87$ / $+308$ neurons)}
+\label{tab:scaling}
+\begin{tabular}{lccccc}
+\toprule
+Architecture & \makecell{ReLU\\recovered} & \makecell{Leaky\\recovered} & Delta & fc4 ReLU & fc4 Leaky \\
+\midrule
+tiniest & 20/32  & 25/32  & $+5$  & 5/8  & 6/8  \\
+tinier  & 29/56  & 35/56  & $+6$  & 0/8  & 2/8  \\
+tiny    & 139/256 & 226/256 & $+87$ & 0/64 & 54/64 \\
+cifar   & 499/832 & 807/832 & $+308$ & 0/64 & 58/64 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Simulated Annealing Versus Parallel Tempering}
+\label{app:exp:abtest}
+Table~\ref{tab:abtest} holds the recovered signatures fixed and varies only the sign optimizer, so any difference is attributable to the search and not to the upstream recovery. The two optimizers return the same assignment on every saturated victim. They diverge on the single unsaturated victim, the tiny ReLU row, where parallel tempering improves on simulated annealing. That row is the only place where the choice of optimizer changes the outcome.
+
+\begin{table}[H]
+\centering
+\caption{A/B of the per-layer sign optimiser on identical recovered signatures.
+SA and PT are identical on 5/6 victims (saturation watchdog); PT wins only on the
+unsaturated tiny\_relu.}
+\label{tab:abtest}
+\begin{tabular}{lccc}
+\toprule
+Model & \makecell{SA+margin\\(sign-acc / EQS)} & \makecell{PT+margin\\(sign-acc / EQS)} & Delta \\
+\midrule
+tiniest\_relu      & 0.601 / 69.6 & 0.601 / 69.6 & identical \\
+tiniest\_leakyrelu & 0.771 / 83.9 & 0.771 / 83.9 & identical \\
+tinier\_relu       & 0.347 / 76.7 & 0.347 / 76.7 & identical \\
+tinier\_leakyrelu  & 0.463 / 81.0 & 0.463 / 81.0 & identical \\
+tiny\_relu         & 0.503 / 75.2 & 0.518 / 77.0 & PT $+1.5$pt sign-acc, $+1.8$ EQS \\
+tiny\_leakyrelu    & 0.500 / 73.2 & 0.500 / 73.2 & identical \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{CIFAR-10 EQS detail}
+\label{app:exp:cifar-eqs}
+Tables~\ref{tab:cifar-eqs} and~\ref{tab:cifar-eqs-leaky} give the per-metric EQS breakdown for the two CIFAR flagships, expanding the composite rows of Table~2 of the main paper into the five underlying metrics for the extraction arm and the matched distillation baseline.
+
+% --- Appendix CIFAR EQS detail table (blank placeholder) --------------------
+\begin{table}[H]
+\centering
+\caption{CIFAR-10 \texttt{cifar\_relu} EQS detail}
+\label{tab:cifar-eqs}
+\begin{tabular}{lccc}
+\toprule
+Metric & Extraction & Distillation & Gap \\
+\midrule
+Metric 1 (in-dist fidelity)    & 56.40\% & 50.33\% & $+6.07$ pt \\
+Metric 2 (margin-cond., far bin) & 60.12\% & 52.71\% & $+7.41$ pt \\
+Metric 3 (off-manifold, uniform) & 34.20\% & 19.62\% & $+14.58$ pt \\
+Metric 4 (McNemar / CI)        & \multicolumn{2}{c}{$p\approx1.2\times10^{-27}$} & $+6.07$ pt [4.99, 7.18] \\
+Metric 5 (structural $|\cos|$ / sign) & 1.000 / 0.531 & $\approx 0$ / --- & $S=0.710$ vs $0$ \\
+\midrule
+EQS (structural)               & 53.6 & 30.2 & $+23.4$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{CIFAR-10 \texttt{cifar\_leakyrelu} EQS detail}
+\label{tab:cifar-eqs-leaky}
+\begin{tabular}{lccc}
+\toprule
+Metric & Extraction & Distillation & Gap \\
+\midrule
+Metric 1 (in-dist fidelity)    & 58.29\% & 52.86\% & $+5.43$ pt \\
+Metric 2 (margin-cond., far bin) & 62.92\% & 54.86\% & $+8.06$ pt \\
+Metric 3 (off-manifold, uniform) & 34.42\% & 21.16\% & $+13.26$ pt \\
+Metric 4 (McNemar / CI)        & \multicolumn{2}{c}{$p\approx5.4\times10^{-22}$} & $+5.43$ pt [4.36, 6.55] \\
+Metric 5 (structural $|\cos|$ / sign) & 1.000 / 0.537 & $\approx 0$ / --- & $S=0.836$ vs $0$ \\
+\midrule
+EQS (structural)               & 57.7 & 31.5 & $+26.2$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The breakdown shows where the composite gap comes from. On both victims the off-manifold gap (Metric 3) is the largest functional gap by a wide margin, $+14.58$ pt on \texttt{cifar\_relu} and $+13.26$ pt on \texttt{cifar\_leakyrelu}, more than double the in-distribution fidelity gap of $+6.07$ pt and $+5.43$ pt. The two arms are close on the data manifold and far apart off it, which is the signature of structural recovery
+rather than fit. Metric 5 sharpens this. The extraction arm carries exact directions with structural score $0.710$ and $0.836$ while the distillation arm scores zero by construction, since its rows match no recovered direction. The McNemar test rules out seed noise as the source of the in-distribution gap, with $p\approx1.2\times10^{-27}$
+and $p\approx5.4\times10^{-22}$, both far below any conventional threshold. The composite follows directly, an extraction EQS of $53.6$ against $30.2$ for \texttt{cifar\_relu} and $57.7$ against $31.5$ for \texttt{cifar\_leakyrelu}, gaps of $+23.4$ and $+26.2$.
+
+\section{Additive Reconstruction Ablation}
+\label{app:exp:ablation}
+Table~\ref{tab:ablation} builds the Phase-3 reconstruction one component at a time on
+each \texttt{make\_blobs} victim, recording held-out agreement and structural EQS at
+every stage. Stages are cumulative. The distillation baseline freezes nothing and is
+shown for contrast.
+
+\begin{table}[H]
+\centering
+\caption{Additive Phase-3 ablation on the six \texttt{make\_blobs} victims, evaluated
+on the held-out slice X\_test3. Each stage adds one component to the stage above it.
+Agreement (Agr) and structural EQS are reported per stage; the distillation baseline
+is non-staged.}
+\label{tab:ablation}
+\setlength{\tabcolsep}{4pt}\small
+\begin{tabular}{llcccccc}
+\toprule
+& & \multicolumn{2}{c}{ReLU} & \multicolumn{2}{c}{Leaky ReLU} \\
+\cmidrule(lr){3-4}\cmidrule(lr){5-6}
+Arch & Stage & Agr & EQS & Agr & EQS \\
+\midrule
+\multirow{6}{*}{tiniest}
+ & RAW (Phase 1+2)        & 12.40\% & 23.6 & 12.50\% & 30.9 \\
+ & + bias recovery        & 22.80\% & 28.9 & 2.80\%  & 24.4 \\
+ & + output-layer fit     & 92.40\% & 66.8 & 98.00\% & 70.9 \\
+ & + sign search          & 99.40\% & 70.7 & 97.90\% & 70.8 \\
+ & + frozen refine (full) & 99.70\% & 71.2 & 98.90\% & 71.5 \\
+ & distillation baseline  & 96.00\% & 54.4 & 98.60\% & 57.1 \\
+\midrule
+\multirow{6}{*}{tinier}
+ & RAW (Phase 1+2)        & 23.30\% & 32.5 & 25.00\% & 35.4 \\
+ & + bias recovery        & 0.00\%  & 17.5 & 6.58\%  & 25.9 \\
+ & + output-layer fit     & 99.94\% & 75.6 & 99.92\% & 74.7 \\
+ & + sign search          & 100.00\% & 79.6 & 100.00\% & 77.9 \\
+ & + frozen refine (full) & 100.00\% & 81.3 & 100.00\% & 78.8 \\
+ & distillation baseline  & 100.00\% & 60.7 & 100.00\% & 60.2 \\
+\midrule
+\multirow{6}{*}{tiny}
+ & RAW (Phase 1+2)        & 3.00\%   & 19.2 & 10.68\% & 26.7 \\
+ & + bias recovery        & 14.34\%  & 24.8 & 12.60\% & 27.7 \\
+ & + output-layer fit     & 100.00\% & 71.0 & 100.00\% & 72.5 \\
+ & + sign search          & 100.00\% & 74.1 & 100.00\% & 75.7 \\
+ & + frozen refine (full) & 100.00\% & 75.3 & 100.00\% & 77.1 \\
+ & distillation baseline  & 100.00\% & 55.2 & 100.00\% & 55.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The ablation separates the agreement story from the structural one. On every victim
+the output-layer regression carries almost the whole agreement lift, taking
+\texttt{tiny\_relu} from 3.00\% to 100.00\% in a single fit, because the recovered
+hidden features are already close to the victim's and a linear decoder on top of them
+is all the task needs. Once agreement saturates, the sign search and the frozen
+refinement add little or nothing to it, which is expected on tasks this separable. The
+structural EQS tells the part that agreement hides. Sign search lifts EQS on every
+victim after agreement has saturated, by up to four points, and frozen refinement adds
+a further point or two, because both are repairing structure that perfect agreement
+does not require but the scorecard rewards. The bias-recovery row reads as a regression
+on several victims, dropping agreement before the output layer exists, but it is a
+prerequisite rather than a contributor. Its estimates feed the prefix activations that
+the output-layer fit and the sign search depend on, and its effect is measured here
+against a still-random decoder, so the intermediate number is not meaningful in
+isolation. The contrast with the distillation baseline holds throughout. The full
+pipeline and the baseline tie on agreement for the separable victims, yet the full
+pipeline scores fifteen to twenty EQS points higher, the same structural advantage the
+two-arm comparison reports.
+
+% Only one work is cited in the material reproduced here (Section 1,
+% Activation Functions).  Entry copied verbatim from the paper's bibliography.
+\begin{thebibliography}{99}
+
+\bibitem{maas2013leakyrelu}
+Maas, A. L., Hannun, A.Y., Ng, A.Y.: Rectifier nonlinearities improve neural
+network acoustic models. In: ICML Workshop on Deep Learning for Audio, Speech
+and Language Processing (2013)
+
+\end{thebibliography}
+
+\end{document}
