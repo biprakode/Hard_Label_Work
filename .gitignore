@@ -69,3 +69,8 @@ results*
 cheating_ablation/reports/
 cheating_ablation/cheat_disable_map.md
 cheating_ablation/.obsidian/
+
+# -------------------------------------- supplementary material --
+# Paper-side document, not part of the codebase; distributed separately.
+supplementary_material.pdf
+supplementary_material.tex
